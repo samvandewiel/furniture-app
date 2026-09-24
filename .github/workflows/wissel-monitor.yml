@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/10 * * * *"   # elke 10 minuten (GitHub kan dit een paar minuten vertragen)
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Alleen testen: geen meldingen sturen"
+        type: boolean
+        default: false
 
 concurrency:
   group: wissel-monitor
@@ -30,19 +35,17 @@ jobs:
           key: wissel-state-${{ github.run_id }}
           restore-keys: wissel-state-
 
-      - name: Diagnose (tijdelijk)
-        run: python diagnose.py
-
       - name: Wissel.nl checken
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
           BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: python monitor.py
 
       - name: Staat opslaan
-        if: always()
+        if: always() && !inputs.dry_run
         uses: actions/cache/save@v4
         with:
           path: wissel-monitor/state.json

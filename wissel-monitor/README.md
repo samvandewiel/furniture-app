@@ -4,10 +4,14 @@ Checkt elke 10 minuten [wissel.nl](https://www.wissel.nl) op nieuwe cadeaubonnen
 **Coolblue, Apple, MediaMarkt en Bol.com** met **meer dan 5% korting** en een
 **waarde van minimaal €50**, en stuurt dan een pushmelding naar je iPhone.
 
-Werkt zo: wissel.nl is een Shopify-winkel, dus alle producten staan in de openbare feed
-`/products.json`. GitHub Actions draait `monitor.py`, die onthoudt welke deals je al hebt
-gezien, en stuurt alleen nieuwe deals via [ntfy](https://ntfy.sh) (gratis, geen account nodig).
-Tik je op de melding, dan open je de listing direct.
+Werkt zo: GitHub Actions draait `monitor.py`, die per merk de pagina
+`wissel.nl/kopen/cadeaubonnen-met-korting/<merk>` uitleest. Elke listing heeft daar een code
+als `v1-b75-n10000-s9300-exp27-03-01` (waarde €100, prijs €93, geldig t/m 01-03-2027).
+Het script onthoudt welke deals je al hebt gezien en stuurt alleen nieuwe deals via
+[ntfy](https://ntfy.sh) (gratis, geen account nodig). Tik je op de melding, dan open je de merkpagina.
+
+Let op: listings met exact dezelfde waarde, prijs en vervaldatum vallen op wissel.nl samen.
+Komt er zo'n identieke bon bij, dan krijg je daar geen aparte melding van.
 
 ## Installeren (±5 minuten)
 
@@ -24,13 +28,16 @@ Tik je op de melding, dan open je de listing direct.
 
 ## Instellingen aanpassen
 
+Wil je testen zonder meldingen? Vink bij *Run workflow* de optie
+"Alleen testen" aan; de gevonden deals staan dan in de log.
+
 Onder *Settings → Secrets and variables → Actions → Variables* (optioneel):
 
 | Variabele      | Standaard                          | Betekenis                          |
 |----------------|------------------------------------|------------------------------------|
 | `MIN_DISCOUNT` | `5`                                | korting moet hóger zijn dan dit (%) |
 | `MIN_VALUE`    | `50`                               | minimale waarde van de bon (€)      |
-| `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen                 |
+| `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
 
 ## Lokaal testen
 
