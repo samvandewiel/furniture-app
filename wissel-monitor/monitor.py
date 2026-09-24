@@ -59,17 +59,38 @@ class Listing:
         return (self.face_value - self.price) / self.face_value * 100
 
 
+class FetchError(RuntimeError):
+    pass
+
+
+FAILURE_ALERT_AFTER = 6  # ~1 uur bij een run per 10 minuten
+RETRY_WAITS = [10, 30, 60]  # seconden; Shopify geeft 429 bij te veel verzoeken
+
+
 def fetch_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json", "Accept-Language": "nl-NL,nl;q=0.9"}
+    )
     last_err: Exception | None = None
-    for attempt in range(3):
+    for attempt in range(len(RETRY_WAITS) + 1):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.load(resp)
+        except urllib.error.HTTPError as err:
+            if err.code != 429 and err.code < 500:
+                raise FetchError(f"{url}: HTTP {err.code}") from err
+            last_err = err
+            wait = RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)]
+            retry_after = err.headers.get("Retry-After") if err.headers else None
+            if retry_after and retry_after.isdigit():
+                wait = min(int(retry_after), 120)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
             last_err = err
-            time.sleep(2 ** attempt)
-    raise RuntimeError(f"Ophalen van {url} mislukt: {last_err}")
+            wait = RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)]
+        if attempt < len(RETRY_WAITS):
+            print(f"{url}: {last_err}, opnieuw over {wait}s")
+            time.sleep(wait)
+    raise FetchError(f"{url}: {last_err}")
 
 
 def fetch_products() -> list[dict]:
@@ -82,6 +103,7 @@ def fetch_products() -> list[dict]:
         if len(batch) < 250 or page >= 40:
             return products
         page += 1
+        time.sleep(2)
 
 
 def match_brand(text: str, brands: list[str]) -> str | None:
@@ -186,10 +208,24 @@ def main() -> int:
     state_path = Path(os.environ.get("STATE_FILE", "state.json"))
 
     state = load_state(state_path)
-    first_run = not state
+    first_run = "seen" not in state
     seen: dict = state.get("seen", {})
 
-    listings = extract_listings(fetch_products(), brands)
+    try:
+        products = fetch_products()
+    except FetchError as err:
+        # Niet crashen: deze run overslaan en pas na een uur aan mislukte runs waarschuwen.
+        failures = state.get("failures", 0) + 1
+        print(f"::warning::Wissel.nl niet bereikbaar ({failures}x op rij): {err}")
+        if failures == FAILURE_ALERT_AFTER:
+            send_ntfy("Wissel monitor werkt niet", f"Wissel.nl is al {failures} runs op rij niet bereikbaar.\n{err}", priority=3)
+        state["failures"] = failures
+        state_path.write_text(json.dumps(state, indent=1, sort_keys=True))
+        return 0
+    if state.get("failures", 0) >= FAILURE_ALERT_AFTER:
+        send_ntfy("Wissel monitor werkt weer", "Wissel.nl is weer bereikbaar.", priority=2)
+
+    listings = extract_listings(products, brands)
     deals = [l for l in listings if is_deal(l, min_discount, min_value)]
     new_deals = [d for d in deals if d.key not in seen]
     print(f"{len(listings)} listings voor {', '.join(brands)}; {len(deals)} deals; {len(new_deals)} nieuw")

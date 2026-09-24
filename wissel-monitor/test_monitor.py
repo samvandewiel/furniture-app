@@ -67,5 +67,44 @@ class MainTest(unittest.TestCase):
             self.assertIn("8:81", json.loads(state.read_text())["seen"])
 
 
+    def test_fetch_failure_is_skipped_and_alerts_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            sent = []
+            err = monitor.FetchError("HTTP 429")
+            with mock.patch.object(monitor, "fetch_products", side_effect=err), \
+                 mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: sent.append(t)), \
+                 mock.patch.dict(os.environ, {"STATE_FILE": str(state)}):
+                for _ in range(monitor.FAILURE_ALERT_AFTER + 2):
+                    self.assertEqual(monitor.main(), 0)
+            self.assertEqual(sent, ["Wissel monitor werkt niet"])
+            # Eerste geslaagde run na storing: herstelmelding + gewone eerste-run melding.
+            sent = self.run_main(FEED, state)
+            self.assertEqual(sent[0], "Wissel monitor werkt weer")
+            self.assertIn("2 deals", sent[1])
+            self.assertNotIn("failures", json.loads(state.read_text()))
+
+
+class FetchJsonTest(unittest.TestCase):
+    def test_retries_on_429(self):
+        import io
+        import urllib.error
+        ok = mock.MagicMock()
+        ok.__enter__.return_value = io.BytesIO(b'{"products": []}')
+        too_many = urllib.error.HTTPError("u", 429, "Too Many Requests", {"Retry-After": "1"}, None)
+        with mock.patch("urllib.request.urlopen", side_effect=[too_many, ok]), \
+             mock.patch.object(monitor.time, "sleep") as sleep:
+            self.assertEqual(monitor.fetch_json("https://x.test/p.json"), {"products": []})
+        sleep.assert_called_once_with(1)
+
+    def test_gives_up_after_retries(self):
+        import urllib.error
+        too_many = urllib.error.HTTPError("u", 429, "Too Many Requests", {}, None)
+        with mock.patch("urllib.request.urlopen", side_effect=too_many), \
+             mock.patch.object(monitor.time, "sleep"):
+            with self.assertRaises(monitor.FetchError):
+                monitor.fetch_json("https://x.test/p.json")
+
+
 if __name__ == "__main__":
     unittest.main()
