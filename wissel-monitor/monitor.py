@@ -144,7 +144,8 @@ def fetch_listings(brands: list[str]) -> list[Listing]:
         if i:
             time.sleep(2)
         found = parse_listings(fetch_html(brand_url(brand)), brand)
-        print(f"{brand_info(brand)[1]}: {len(found)} listings")
+        best = max(found, key=lambda l: l.discount, default=None)
+        print(f"{brand_info(brand)[1]}: {len(found)} listings" + (f", hoogste korting: {fmt(best).splitlines()[0]}" if best else ""))
         listings.extend(found)
     return listings
 
