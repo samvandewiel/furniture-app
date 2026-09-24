@@ -1,0 +1,46 @@
+name: Wissel monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # elke 10 minuten (GitHub kan dit een paar minuten vertragen)
+  workflow_dispatch:
+
+concurrency:
+  group: wissel-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: wissel-monitor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Vorige staat herstellen
+        uses: actions/cache/restore@v4
+        with:
+          path: wissel-monitor/state.json
+          key: wissel-state-${{ github.run_id }}
+          restore-keys: wissel-state-
+
+      - name: Wissel.nl checken
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
+          MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
+          BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
+        run: python monitor.py
+
+      - name: Staat opslaan
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: wissel-monitor/state.json
+          key: wissel-state-${{ github.run_id }}
