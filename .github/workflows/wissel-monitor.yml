@@ -35,6 +35,9 @@ jobs:
           key: wissel-state-${{ github.run_id }}
           restore-keys: wissel-state-
 
+      - name: Diagnose (tijdelijk)
+        run: python diagnose.py
+
       - name: Wissel.nl checken
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
