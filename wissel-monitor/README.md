@@ -1,6 +1,6 @@
 # Wissel monitor
 
-Checkt elke 10 minuten [wissel.nl](https://www.wissel.nl) op nieuwe cadeaubonnen van
+Checkt elke 2 minuten [wissel.nl](https://www.wissel.nl) op nieuwe cadeaubonnen van
 **Coolblue, Apple, MediaMarkt en Bol.com** met **meer dan 5% korting** en een
 **waarde van minimaal €50**, en stuurt dan een pushmelding naar je iPhone.
 
@@ -29,7 +29,12 @@ Komt er zo'n identieke bon bij, dan krijg je daar geen aparte melding van.
 ## Instellingen aanpassen
 
 Wil je testen zonder meldingen? Vink bij *Run workflow* de optie
-"Alleen testen" aan; de gevonden deals staan dan in de log.
+"Alleen testen" aan; dan doet hij één check en staan de gevonden deals in de log.
+
+**Hoe hij blijft draaien:** GitHub start geplande runs vaak uren te laat. Daarom draait één
+run ongeveer 5,5 uur en checkt hij zelf elke 2 minuten; aan het eind start hij de volgende
+run. Een cron elk uur vangt het op als die keten breekt. Start je handmatig een run terwijl
+er al een loopt, dan wacht die in de wachtrij tot de lopende klaar is.
 
 Onder *Settings → Secrets and variables → Actions → Variables* (optioneel):
 
@@ -38,6 +43,7 @@ Onder *Settings → Secrets and variables → Actions → Variables* (optioneel)
 | `MIN_DISCOUNT` | `5`                                | korting moet hóger zijn dan dit (%) |
 | `MIN_VALUE`    | `50`                               | minimale waarde van de bon (€)      |
 | `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
+| `CHECK_INTERVAL` | `120`                            | seconden tussen twee checks          |
 
 ## Lokaal testen
 

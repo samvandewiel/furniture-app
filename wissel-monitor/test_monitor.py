@@ -107,6 +107,42 @@ class MainTest(unittest.TestCase):
             self.assertNotIn("failures", json.loads(state.read_text()))
 
 
+class LoopTest(unittest.TestCase):
+    def run_loop(self, check_side_effect=None):
+        clock = [0.0]
+        calls = []
+
+        def check(*a):
+            calls.append(clock[0])
+            clock[0] += 10  # een check duurt 10 seconden
+            if check_side_effect:
+                check_side_effect()
+
+        def sleep(sec):
+            clock[0] += sec
+
+        with mock.patch.object(monitor, "check_once", side_effect=check), \
+             mock.patch.object(monitor.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(monitor.time, "sleep", side_effect=sleep), \
+             mock.patch.dict(os.environ, {"RUN_MINUTES": "10", "CHECK_INTERVAL": "120"}):
+            self.assertEqual(monitor.main(), 0)
+        return calls
+
+    def test_checks_every_interval_until_deadline(self):
+        self.assertEqual(self.run_loop(), [0, 120, 240, 360, 480])
+
+    def test_error_does_not_stop_loop(self):
+        err = mock.Mock(side_effect=[RuntimeError("ntfy weg")] + [None] * 10)
+        with mock.patch("traceback.print_exc"):
+            self.assertEqual(len(self.run_loop(err)), 5)
+
+    def test_single_check_raises(self):
+        with mock.patch.object(monitor, "check_once", side_effect=RuntimeError("x")), \
+             mock.patch.dict(os.environ, {"RUN_MINUTES": "0"}):
+            with self.assertRaises(RuntimeError):
+                monitor.main()
+
+
 class FetchTest(unittest.TestCase):
     URL = "https://x.test/p"
 

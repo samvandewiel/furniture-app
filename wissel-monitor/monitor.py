@@ -12,6 +12,8 @@ Configuratie via omgevingsvariabelen:
   MIN_VALUE       minimale nominale waarde in euro (standaard 50)
   BRANDS          komma-gescheiden merken of wissel.nl-slugs (standaard coolblue,apple,mediamarkt,bol)
   STATE_FILE      pad naar het bestand met al geziene listings (standaard state.json)
+  RUN_MINUTES     blijf zo lang herhalen (standaard 0: één keer checken)
+  CHECK_INTERVAL  seconden tussen checks in herhaalmodus (standaard 120)
   DRY_RUN=1       niets versturen, alleen printen
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ import os
 import re
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -45,7 +48,7 @@ PRODUCT_RE = re.compile(r'<div\b[^>]*\bid="product-(v\d+-[^"]+)"[^>]*>', re.I)
 SKU_RE = re.compile(r"-n(\d+)-s(\d+)(?:-exp(\d{2}-\d{2}-\d{2}))?")
 STOCK_RE = re.compile(r"(\d+\+?)\s+op voorraad", re.I)
 
-FAILURE_ALERT_AFTER = 6  # ~1 uur bij een run per 10 minuten
+FAILURE_ALERT_AFTER = 30  # ~1 uur bij een check per 2 minuten
 RETRY_WAITS = [10, 30, 60]  # seconden
 
 
@@ -195,12 +198,7 @@ def load_state(path: Path) -> dict:
     return {}
 
 
-def main() -> int:
-    min_discount = float(os.environ.get("MIN_DISCOUNT", "5"))
-    min_value = float(os.environ.get("MIN_VALUE", "50"))
-    brands = [b.strip().lower() for b in os.environ.get("BRANDS", "coolblue,apple,mediamarkt,bol").split(",") if b.strip()]
-    state_path = Path(os.environ.get("STATE_FILE", "state.json"))
-
+def check_once(state_path: Path, brands: list[str], min_discount: float, min_value: float) -> None:
     state = load_state(state_path)
     first_run = "seen" not in state
     seen: dict = state.get("seen", {})
@@ -211,20 +209,20 @@ def main() -> int:
             # Alle merken tegelijk leeg is vrijwel onmogelijk: waarschijnlijk is de site veranderd.
             raise FetchError("geen enkele listing gevonden; is de opmaak van wissel.nl veranderd?")
     except FetchError as err:
-        # Niet crashen: deze run overslaan en pas na een uur aan mislukte runs waarschuwen.
+        # Niet crashen: deze check overslaan en pas na een uur aan mislukte checks waarschuwen.
         failures = state.get("failures", 0) + 1
         print(f"::warning::Wissel.nl niet uit te lezen ({failures}x op rij): {err}")
         if failures == FAILURE_ALERT_AFTER:
-            send_ntfy("Wissel monitor werkt niet", f"Wissel.nl is al {failures} runs op rij niet uit te lezen.\n{err}", priority=3)
+            send_ntfy("Wissel monitor werkt niet", f"Wissel.nl is al {failures} checks op rij niet uit te lezen.\n{err}", priority=3)
         state["failures"] = failures
         state_path.write_text(json.dumps(state, indent=1, sort_keys=True))
-        return 0
+        return
     if state.get("failures", 0) >= FAILURE_ALERT_AFTER:
         send_ntfy("Wissel monitor werkt weer", "Wissel.nl is weer uit te lezen.", priority=2)
 
     deals = [l for l in listings if is_deal(l, min_discount, min_value)]
     new_deals = [d for d in deals if d.key not in seen]
-    print(f"{len(listings)} listings; {len(deals)} deals; {len(new_deals)} nieuw")
+    print(f"{time.strftime('%H:%M:%S')} {len(listings)} listings; {len(deals)} deals; {len(new_deals)} nieuw")
 
     if first_run and new_deals:
         best = sorted(new_deals, key=lambda d: d.discount, reverse=True)
@@ -250,7 +248,32 @@ def main() -> int:
     current = {d.key for d in deals}
     seen = {k: v for k, v in seen.items() if k in current or now - v < 30 * 86400}
     state_path.write_text(json.dumps({"seen": seen}, indent=1, sort_keys=True))
-    return 0
+
+
+def main() -> int:
+    min_discount = float(os.environ.get("MIN_DISCOUNT", "5"))
+    min_value = float(os.environ.get("MIN_VALUE", "50"))
+    brands = [b.strip().lower() for b in os.environ.get("BRANDS", "coolblue,apple,mediamarkt,bol").split(",") if b.strip()]
+    state_path = Path(os.environ.get("STATE_FILE", "state.json"))
+    run_seconds = float(os.environ.get("RUN_MINUTES", "0")) * 60
+    interval = float(os.environ.get("CHECK_INTERVAL", "120"))
+
+    # GitHub start geplande runs vaak uren te laat. Daarom blijft één run een paar uur
+    # draaien en checkt hij zelf elke paar minuten.
+    deadline = time.monotonic() + run_seconds
+    while True:
+        started = time.monotonic()
+        try:
+            check_once(state_path, brands, min_discount, min_value)
+        except Exception:
+            if not run_seconds:
+                raise
+            # Eén mislukte check (bijv. ntfy even onbereikbaar) mag de lus niet stoppen.
+            traceback.print_exc()
+        wait = max(0.0, interval - (time.monotonic() - started))
+        if time.monotonic() + wait >= deadline:
+            return 0
+        time.sleep(wait)
 
 
 if __name__ == "__main__":

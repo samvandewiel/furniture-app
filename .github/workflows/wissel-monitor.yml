@@ -1,12 +1,15 @@
 name: Wissel monitor
 
+# GitHub start geplande runs vaak uren te laat. Daarom draait één run ~5,5 uur en checkt
+# die zelf elke 2 minuten; aan het eind start hij de volgende run. De cron is alleen een
+# vangnet voor als die keten ooit breekt.
 on:
   schedule:
-    - cron: "*/10 * * * *"   # elke 10 minuten (GitHub kan dit een paar minuten vertragen)
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Alleen testen: geen meldingen sturen"
+        description: "Alleen testen: één check, geen meldingen sturen"
         type: boolean
         default: false
 
@@ -14,10 +17,14 @@ concurrency:
   group: wissel-monitor
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write   # om de volgende run te starten
+
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 350
     defaults:
       run:
         working-directory: wissel-monitor
@@ -41,7 +48,10 @@ jobs:
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
           BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
+          CHECK_INTERVAL: ${{ vars.CHECK_INTERVAL || '120' }}
+          RUN_MINUTES: ${{ inputs.dry_run && '0' || '330' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          PYTHONUNBUFFERED: "1"
         run: python monitor.py
 
       - name: Staat opslaan
@@ -50,3 +60,9 @@ jobs:
         with:
           path: wissel-monitor/state.json
           key: wissel-state-${{ github.run_id }}
+
+      - name: Volgende run starten
+        if: ${{ !cancelled() && !inputs.dry_run && github.ref == 'refs/heads/master' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run wissel-monitor.yml --repo "${{ github.repository }}" --ref master
