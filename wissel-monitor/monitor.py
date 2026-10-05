@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Houdt wissel.nl in de gaten op nieuwe cadeaubon-listings en stuurt een pushmelding.
+"""Houdt wissel.nl en cardswap.nl in de gaten op nieuwe cadeaubon-listings en stuurt een pushmelding.
 
-Per merk staat het aanbod op /kopen/cadeaubonnen-met-korting/<merk>. Elke listing is een
-blok als <div id="product-v1-b75-n5000-s4700-exp26-12-31" data-nominal-value="50.0" ...>:
+wissel.nl: per merk staat het aanbod op /kopen/cadeaubonnen-met-korting/<merk>. Elke listing
+is een blok als <div id="product-v1-b75-n5000-s4700-exp26-12-31" ...>:
 n = nominale waarde in centen, s = verkoopprijs in centen, exp = vervaldatum.
+
+cardswap.nl: een Shopify-winkel; elke bon is een eigen product ("Apple 50 euro") in de
+collectie /collections/<handle>/products.json.
 
 Configuratie via omgevingsvariabelen:
   NTFY_TOPIC      ntfy.sh-topic waar meldingen heen gaan (verplicht om te versturen)
@@ -11,6 +14,8 @@ Configuratie via omgevingsvariabelen:
   MIN_DISCOUNT    minimale korting in procent, strikt groter dan (standaard 5)
   MIN_VALUE       minimale nominale waarde in euro (standaard 50)
   BRANDS          komma-gescheiden merken of wissel.nl-slugs (standaard coolblue,apple,mediamarkt,bol)
+  SOURCES         welke sites (standaard wissel,cardswap)
+  CARDSWAP_COLLECTIONS  cardswap-collecties (standaard apple,bol-com,bol-com-copy,coolblue)
   STATE_FILE      pad naar het bestand met al geziene listings (standaard state.json)
   RUN_MINUTES     blijf zo lang herhalen (standaard 0: één keer checken)
   CHECK_INTERVAL  seconden tussen checks in herhaalmodus (standaard 120)
@@ -31,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BASE_URL = os.environ.get("WISSEL_URL", "https://www.wissel.nl")
+CARDSWAP_URL = os.environ.get("CARDSWAP_URL", "https://www.cardswap.nl")
+SOURCE_NAMES = {"wissel": "Wissel", "cardswap": "Cardswap"}
 USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
@@ -47,6 +54,8 @@ BRAND_SLUGS = {
 PRODUCT_RE = re.compile(r'<div\b[^>]*\bid="product-(v\d+-[^"]+)"[^>]*>', re.I)
 SKU_RE = re.compile(r"-n(\d+)-s(\d+)(?:-exp(\d{2}-\d{2}-\d{2}))?")
 STOCK_RE = re.compile(r"(\d+\+?)\s+op voorraad", re.I)
+HANDLE_VALUE_RE = re.compile(r"^[a-z0-9-]+_(\d+)_\d{12}", re.I)
+VALUE_RE = re.compile(r"(\d+(?:[.,]\d{1,2})?)\s*(?:euro|eur)\b|€\s*(\d+(?:[.,]\d{1,2})?)", re.I)
 
 FAILURE_ALERT_AFTER = 30  # ~1 uur bij een check per 2 minuten
 RETRY_WAITS = [10, 30, 60]  # seconden
@@ -65,15 +74,16 @@ class Listing:
     face_value: float
     expires: str | None = None
     stock: str | None = None
+    source: str = "wissel"
 
     @property
     def discount(self) -> float:
         return (self.face_value - self.price) / self.face_value * 100
 
 
-def fetch_html(url: str) -> str:
+def fetch_html(url: str, accept: str = "text/html") -> str:
     req = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, "Accept": "text/html", "Accept-Language": "nl-NL,nl;q=0.9"}
+        url, headers={"User-Agent": USER_AGENT, "Accept": accept, "Accept-Language": "nl-NL,nl;q=0.9"}
     )
     last_err: Exception | None = None
     for attempt in range(len(RETRY_WAITS) + 1):
@@ -141,16 +151,94 @@ def parse_listings(page: str, brand: str) -> list[Listing]:
     return list(listings.values())
 
 
+def log_found(source: str, label: str, found: list[Listing]) -> None:
+    best = max(found, key=lambda l: l.discount, default=None)
+    print(f"{SOURCE_NAMES[source]} {label}: {len(found)} listings"
+          + (f", hoogste korting: {fmt(best).splitlines()[0]}" if best else ""))
+
+
 def fetch_listings(brands: list[str]) -> list[Listing]:
+    """Alle listings van wissel.nl voor de gegeven merken."""
     listings: list[Listing] = []
     for i, brand in enumerate(brands):
         if i:
             time.sleep(2)
         found = parse_listings(fetch_html(brand_url(brand)), brand)
-        best = max(found, key=lambda l: l.discount, default=None)
-        print(f"{brand_info(brand)[1]}: {len(found)} listings" + (f", hoogste korting: {fmt(best).splitlines()[0]}" if best else ""))
+        log_found("wissel", brand_info(brand)[1], found)
         listings.extend(found)
+    if not listings:
+        # Alle merken tegelijk leeg is vrijwel onmogelijk: waarschijnlijk is de site veranderd.
+        raise FetchError("geen enkele listing gevonden; is de opmaak van wissel.nl veranderd?")
     return listings
+
+
+def collection_brand(handle: str) -> str:
+    """'bol-com-copy' -> 'bol'; onbekende collecties houden hun eigen naam."""
+    return next((b for b in BRAND_SLUGS if b in handle.lower()), handle)
+
+
+def parse_cardswap(products: list[dict], brand: str) -> list[Listing]:
+    """Zet Shopify-producten van cardswap.nl om in listings."""
+    listings = []
+    for product in products:
+        for variant in product.get("variants", []):
+            if variant.get("available") is False:
+                continue
+            try:
+                price = float(variant.get("price") or 0)
+                compare_at = float(variant.get("compare_at_price") or 0)
+            except ValueError:
+                continue
+            face = compare_at if compare_at > price else None
+            if face is None:
+                m = VALUE_RE.search(product.get("title", ""))
+                if m:
+                    face = float((m.group(1) or m.group(2)).replace(",", "."))
+                else:  # handles zien eruit als apple_50_202610031200_3
+                    m = HANDLE_VALUE_RE.search(product.get("handle", ""))
+                    face = float(m.group(1)) if m else None
+            if not face or not price:
+                continue
+            listings.append(Listing(
+                key=f"cardswap:{variant.get('id')}",
+                brand=brand,
+                url=f"{CARDSWAP_URL}/products/{product.get('handle')}",
+                price=price,
+                face_value=face,
+                source="cardswap",
+            ))
+    return listings
+
+
+def fetch_cardswap(collections: list[str]) -> list[Listing]:
+    """Alle listings uit de cardswap.nl-collecties; een lege collectie (uitverkocht) is normaal."""
+    listings: dict[str, Listing] = {}
+    for i, handle in enumerate(collections):
+        if i:
+            time.sleep(2)
+        brand = collection_brand(handle)
+        found: list[Listing] = []
+        for page in range(1, 6):
+            url = f"{CARDSWAP_URL}/collections/{handle}/products.json?limit=250&page={page}"
+            try:
+                products = json.loads(fetch_html(url, accept="application/json")).get("products", [])
+            except json.JSONDecodeError as err:
+                raise FetchError(f"{url}: geen JSON ({err})") from err
+            found += parse_cardswap(products, brand)
+            if len(products) < 250:
+                break
+        log_found("cardswap", handle, found)
+        for listing in found:
+            listings.setdefault(listing.key, listing)  # collecties kunnen overlappen
+    return list(listings.values())
+
+
+def fetch_source(source: str, brands: list[str], collections: list[str]) -> list[Listing]:
+    if source == "wissel":
+        return fetch_listings(brands)
+    if source == "cardswap":
+        return fetch_cardswap(collections)
+    raise ValueError(f"onbekende bron: {source}")
 
 
 def is_deal(listing: Listing, min_discount: float, min_value: float) -> bool:
@@ -198,48 +286,56 @@ def load_state(path: Path) -> dict:
     return {}
 
 
-def check_once(state_path: Path, brands: list[str], min_discount: float, min_value: float) -> None:
+def check_once(state_path: Path, brands: list[str], min_discount: float, min_value: float,
+               sources: tuple[str, ...] = ("wissel",), collections: tuple[str, ...] = ()) -> None:
     state = load_state(state_path)
-    first_run = "seen" not in state
     seen: dict = state.get("seen", {})
+    # Oude staat (alleen wissel) had geen "sources" en "failures" als getal.
+    started = set(state.get("sources", ["wissel"] if "seen" in state else []))
+    failures = state.get("failures", {})
+    if not isinstance(failures, dict):
+        failures = {"wissel": failures}
 
-    try:
-        listings = fetch_listings(brands)
-        if not listings:
-            # Alle merken tegelijk leeg is vrijwel onmogelijk: waarschijnlijk is de site veranderd.
-            raise FetchError("geen enkele listing gevonden; is de opmaak van wissel.nl veranderd?")
-    except FetchError as err:
-        # Niet crashen: deze check overslaan en pas na een uur aan mislukte checks waarschuwen.
-        failures = state.get("failures", 0) + 1
-        print(f"::warning::Wissel.nl niet uit te lezen ({failures}x op rij): {err}")
-        if failures == FAILURE_ALERT_AFTER:
-            send_ntfy("Wissel monitor werkt niet", f"Wissel.nl is al {failures} checks op rij niet uit te lezen.\n{err}", priority=3)
-        state["failures"] = failures
-        state_path.write_text(json.dumps(state, indent=1, sort_keys=True))
-        return
-    if state.get("failures", 0) >= FAILURE_ALERT_AFTER:
-        send_ntfy("Wissel monitor werkt weer", "Wissel.nl is weer uit te lezen.", priority=2)
+    listings: list[Listing] = []
+    ok_sources = []
+    for source in sources:
+        name = SOURCE_NAMES.get(source, source)
+        try:
+            found = fetch_source(source, brands, list(collections))
+        except FetchError as err:
+            # Niet crashen: deze bron overslaan en pas na een uur aan mislukte checks waarschuwen.
+            failures[source] = failures.get(source, 0) + 1
+            print(f"::warning::{name} niet uit te lezen ({failures[source]}x op rij): {err}")
+            if failures[source] == FAILURE_ALERT_AFTER:
+                send_ntfy(f"{name} monitor werkt niet", f"{name} is al {failures[source]} checks op rij niet uit te lezen.\n{err}", priority=3)
+            continue
+        if failures.pop(source, 0) >= FAILURE_ALERT_AFTER:
+            send_ntfy(f"{name} monitor werkt weer", f"{name} is weer uit te lezen.", priority=2)
+        listings += found
+        ok_sources.append(source)
 
     deals = [l for l in listings if is_deal(l, min_discount, min_value)]
     new_deals = [d for d in deals if d.key not in seen]
     print(f"{time.strftime('%H:%M:%S')} {len(listings)} listings; {len(deals)} deals; {len(new_deals)} nieuw")
 
-    if first_run and new_deals:
-        best = sorted(new_deals, key=lambda d: d.discount, reverse=True)
-        body = "\n\n".join(fmt(d) for d in best[:10])
-        if len(best) > 10:
-            body += f"\n\n…en nog {len(best) - 10} meer"
-        send_ntfy(f"Wissel monitor actief: {len(best)} deals nu", body, click=f"{BASE_URL}/kopen/cadeaubonnen-met-korting", priority=3)
-    elif first_run:
-        send_ntfy(
-            "Wissel monitor actief",
-            f"Ik volg {len(listings)} listings. Er is nu geen deal die aan je criteria voldoet; "
-            "je krijgt een melding zodra er een verschijnt.",
-            priority=3,
-        )
-    else:
-        for deal in sorted(new_deals, key=lambda d: d.discount, reverse=True):
-            send_ntfy(f"{brand_info(deal.brand)[1]}: {deal.discount:.1f}% korting", fmt(deal), click=deal.url)
+    for source in ok_sources:
+        name = SOURCE_NAMES.get(source, source)
+        source_new = sorted((d for d in new_deals if d.source == source), key=lambda d: d.discount, reverse=True)
+        if source not in started:
+            # Eerste keer voor deze bron: één samenvatting in plaats van een melding per deal.
+            count = sum(1 for l in listings if l.source == source)
+            if source_new:
+                body = "\n\n".join(fmt(d) for d in source_new[:10])
+                if len(source_new) > 10:
+                    body += f"\n\n…en nog {len(source_new) - 10} meer"
+                send_ntfy(f"{name} monitor actief: {len(source_new)} deals nu", body, click=source_new[0].url, priority=3)
+            else:
+                send_ntfy(f"{name} monitor actief", f"Ik volg {count} listings. Er is nu geen deal die aan je criteria voldoet; "
+                          "je krijgt een melding zodra er een verschijnt.", priority=3)
+            started.add(source)
+            continue
+        for deal in source_new:
+            send_ntfy(f"{name} · {brand_info(deal.brand)[1]}: {deal.discount:.1f}% korting", fmt(deal), click=deal.url)
 
     now = int(time.time())
     for deal in deals:
@@ -247,7 +343,10 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
     # Vergeet listings die al 30 dagen weg zijn, zodat het bestand klein blijft.
     current = {d.key for d in deals}
     seen = {k: v for k, v in seen.items() if k in current or now - v < 30 * 86400}
-    state_path.write_text(json.dumps({"seen": seen}, indent=1, sort_keys=True))
+    new_state = {"seen": seen, "sources": sorted(started)}
+    if failures:
+        new_state["failures"] = failures
+    state_path.write_text(json.dumps(new_state, indent=1, sort_keys=True))
 
 
 def main() -> int:
@@ -257,6 +356,9 @@ def main() -> int:
     state_path = Path(os.environ.get("STATE_FILE", "state.json"))
     run_seconds = float(os.environ.get("RUN_MINUTES", "0")) * 60
     interval = float(os.environ.get("CHECK_INTERVAL", "120"))
+    sources = tuple(x.strip() for x in os.environ.get("SOURCES", "wissel,cardswap").split(",") if x.strip())
+    collections = tuple(x.strip() for x in os.environ.get(
+        "CARDSWAP_COLLECTIONS", "apple,bol-com,bol-com-copy,coolblue").split(",") if x.strip())
 
     # GitHub start geplande runs vaak uren te laat. Daarom blijft één run een paar uur
     # draaien en checkt hij zelf elke paar minuten.
@@ -264,7 +366,7 @@ def main() -> int:
     while True:
         started = time.monotonic()
         try:
-            check_once(state_path, brands, min_discount, min_value)
+            check_once(state_path, brands, min_discount, min_value, sources, collections)
         except Exception:
             if not run_seconds:
                 raise

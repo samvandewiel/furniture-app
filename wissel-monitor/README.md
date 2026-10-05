@@ -1,6 +1,7 @@
 # Wissel monitor
 
-Checkt elke 2 minuten [wissel.nl](https://www.wissel.nl) op nieuwe cadeaubonnen van
+Checkt elke 2 minuten [wissel.nl](https://www.wissel.nl) en [cardswap.nl](https://www.cardswap.nl)
+op nieuwe cadeaubonnen van
 **Coolblue, Apple, MediaMarkt en Bol.com** met **meer dan 5% korting** en een
 **waarde van minimaal €50**, en stuurt dan een pushmelding naar je iPhone.
 
@@ -12,6 +13,11 @@ Het script onthoudt welke deals je al hebt gezien en stuurt alleen nieuwe deals 
 
 Let op: listings met exact dezelfde waarde, prijs en vervaldatum vallen op wissel.nl samen.
 Komt er zo'n identieke bon bij, dan krijg je daar geen aparte melding van.
+
+**Cardswap** is een Shopify-winkel: het script leest per collectie
+`cardswap.nl/collections/<collectie>/products.json`. Daar is elke bon een eigen product
+("Apple 50 euro" voor €46), dus elke nieuwe bon geeft een eigen melding, met een link
+direct naar die bon. Cardswap heeft geen MediaMarkt; een lege collectie (alles verkocht) is normaal.
 
 ## Installeren (±5 minuten)
 
@@ -44,6 +50,8 @@ Onder *Settings → Secrets and variables → Actions → Variables* (optioneel)
 | `MIN_VALUE`    | `50`                               | minimale waarde van de bon (€)      |
 | `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
 | `CHECK_INTERVAL` | `120`                            | seconden tussen twee checks          |
+| `SOURCES`      | `wissel,cardswap`                  | welke sites                          |
+| `CARDSWAP_COLLECTIONS` | `apple,bol-com,bol-com-copy,coolblue` | cardswap-collecties (laatste deel van de URL) |
 
 ## Lokaal testen
 

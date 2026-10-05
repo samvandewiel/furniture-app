@@ -44,17 +44,15 @@ jobs:
           key: wissel-state-${{ github.run_id }}
           restore-keys: wissel-state-
 
-      - name: Diagnose (tijdelijk)
-        if: inputs.dry_run
-        run: python diagnose.py
-
-      - name: Wissel.nl checken
+      - name: Wissel.nl en Cardswap checken
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
           BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
           CHECK_INTERVAL: ${{ vars.CHECK_INTERVAL || '120' }}
+          SOURCES: ${{ vars.SOURCES || 'wissel,cardswap' }}
+          CARDSWAP_COLLECTIONS: ${{ vars.CARDSWAP_COLLECTIONS || 'apple,bol-com,bol-com-copy,coolblue' }}
           RUN_MINUTES: ${{ inputs.dry_run && '0' || '330' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           PYTHONUNBUFFERED: "1"

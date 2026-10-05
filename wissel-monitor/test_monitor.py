@@ -64,16 +64,64 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(monitor.fmt(l), "Bol.com €50 voor €45 (10.0% korting)\ngeldig t/m 30-11-2026, 1 op voorraad")
 
 
+def cardswap_product(pid, title, price, available=True, handle=None):
+    return {"id": pid, "title": title, "handle": handle or f"p_{pid}",
+            "variants": [{"id": pid * 10, "price": price, "compare_at_price": None, "available": available}]}
+
+
+CARDSWAP = {
+    "apple": [cardswap_product(1, "Apple 50 euro", "46.00"),            # 8% -> deal
+              cardswap_product(2, "Apple 25 euro", "20.00")],           # < €50
+    "coolblue": [cardswap_product(3, "Coolblue 100 euro", "96.00"),     # 4% -> nee
+                 cardswap_product(4, "Coolblue 50 euro", "40.00", available=False)],
+    "bol-com": [cardswap_product(5, "Bol.com 75 euro", "69.00")],       # 8% -> deal
+    "bol-com-copy": [cardswap_product(5, "Bol.com 75 euro", "69.00")],  # zelfde product, dubbel
+}
+
+
+class CardswapTest(unittest.TestCase):
+    def test_parse(self):
+        found = monitor.parse_cardswap(CARDSWAP["apple"] + CARDSWAP["coolblue"], "apple")
+        self.assertEqual([(l.key, l.face_value, l.price) for l in found],
+                         [("cardswap:10", 50.0, 46.0), ("cardswap:20", 25.0, 20.0), ("cardswap:30", 100.0, 96.0)])
+        self.assertEqual(found[0].url, "https://www.cardswap.nl/products/p_1")
+        self.assertEqual(found[0].source, "cardswap")
+
+    def test_value_from_handle_and_compare_at(self):
+        p = cardswap_product(6, "Cadeaukaart", "45.00", handle="apple_50_202610031200_3")
+        [l] = monitor.parse_cardswap([p], "apple")
+        self.assertEqual(l.face_value, 50.0)
+        p = cardswap_product(7, "Cadeaukaart", "45.00")
+        p["variants"][0]["compare_at_price"] = "60.00"
+        [l] = monitor.parse_cardswap([p], "apple")
+        self.assertEqual(l.face_value, 60.0)
+
+    def test_collection_brand(self):
+        self.assertEqual(monitor.collection_brand("bol-com-copy"), "bol")
+        self.assertEqual(monitor.collection_brand("coolblue"), "coolblue")
+        self.assertEqual(monitor.collection_brand("zalando"), "zalando")
+
+
 class MainTest(unittest.TestCase):
-    def run_main(self, pages, state_file, fetch_error=None):
+    COLLECTIONS = "apple,bol-com,bol-com-copy,coolblue"
+
+    def run_main(self, pages, state_file, cardswap=None, fetch_error=None, sources="wissel"):
         sent = []
-        fetch = mock.patch.object(
-            monitor, "fetch_listings",
-            side_effect=fetch_error if fetch_error else None,
-            return_value=None if fetch_error else listings_for(pages),
-        )
-        with fetch, mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: sent.append(t)), \
-             mock.patch.dict(os.environ, {"STATE_FILE": str(state_file)}):
+
+        def fake_fetch(url, accept="text/html"):
+            if fetch_error:
+                raise fetch_error
+            if "cardswap" in url:
+                handle = url.split("/collections/")[1].split("/")[0]
+                return json.dumps({"products": (cardswap or {}).get(handle, [])})
+            brand = next(b for b in monitor.BRAND_SLUGS if url.endswith("/" + monitor.brand_info(b)[0]))
+            return pages.get(brand, "<main></main>")
+
+        env = {"STATE_FILE": str(state_file), "SOURCES": sources, "CARDSWAP_COLLECTIONS": self.COLLECTIONS}
+        with mock.patch.object(monitor, "fetch_html", side_effect=fake_fetch), \
+             mock.patch.object(monitor.time, "sleep"), \
+             mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: sent.append(t)), \
+             mock.patch.dict(os.environ, env):
             self.assertEqual(monitor.main(), 0)
         return sent
 
@@ -81,18 +129,17 @@ class MainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             state = Path(d) / "state.json"
             first = self.run_main(PAGES, state)
-            self.assertEqual(len(first), 1)
-            self.assertIn("2 deals", first[0])
+            self.assertEqual(first, ["Wissel monitor actief: 2 deals nu"])
             self.assertEqual(self.run_main(PAGES, state), [])
             extra = dict(PAGES, mediamarkt=item("v1-b9-n25000-s22500-exp27-01-01", "250.0", "-10.0"))
-            self.assertEqual(self.run_main(extra, state), ["MediaMarkt: 10.0% korting"])
+            self.assertEqual(self.run_main(extra, state), ["Wissel · MediaMarkt: 10.0% korting"])
             self.assertIn("mediamarkt:v1-b9-n25000-s22500-exp27-01-01", json.loads(state.read_text())["seen"])
 
     def test_empty_result_counts_as_failure(self):
         with tempfile.TemporaryDirectory() as d:
             state = Path(d) / "state.json"
             self.assertEqual(self.run_main({}, state), [])
-            self.assertEqual(json.loads(state.read_text())["failures"], 1)
+            self.assertEqual(json.loads(state.read_text())["failures"], {"wissel": 1})
 
     def test_fetch_failure_is_skipped_and_alerts_once(self):
         with tempfile.TemporaryDirectory() as d:
@@ -102,9 +149,36 @@ class MainTest(unittest.TestCase):
                 sent += self.run_main(None, state, fetch_error=monitor.FetchError("HTTP 429"))
             self.assertEqual(sent, ["Wissel monitor werkt niet"])
             sent = self.run_main(PAGES, state)
-            self.assertEqual(sent[0], "Wissel monitor werkt weer")
-            self.assertIn("2 deals", sent[1])
+            self.assertEqual(sent, ["Wissel monitor werkt weer", "Wissel monitor actief: 2 deals nu"])
             self.assertNotIn("failures", json.loads(state.read_text()))
+
+    def test_cardswap_alongside_wissel(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            both = "wissel,cardswap"
+            first = self.run_main(PAGES, state, CARDSWAP, sources=both)
+            self.assertEqual(first, ["Wissel monitor actief: 2 deals nu", "Cardswap monitor actief: 2 deals nu"])
+            self.assertEqual(self.run_main(PAGES, state, CARDSWAP, sources=both), [])
+            more = dict(CARDSWAP, coolblue=CARDSWAP["coolblue"] + [cardswap_product(8, "Coolblue 50 euro", "46.00")])
+            self.assertEqual(self.run_main(PAGES, state, more, sources=both), ["Cardswap · Coolblue: 8.0% korting"])
+
+    def test_empty_cardswap_is_fine(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            sent = self.run_main(PAGES, state, {}, sources="wissel,cardswap")
+            self.assertEqual(sent[1], "Cardswap monitor actief")
+            self.assertNotIn("failures", json.loads(state.read_text()))
+
+    def test_old_state_gets_cardswap_summary_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            self.run_main(PAGES, state)
+            old = json.loads(state.read_text())
+            del old["sources"]
+            old["failures"] = 3  # oud formaat
+            state.write_text(json.dumps(old))
+            sent = self.run_main(PAGES, state, CARDSWAP, sources="wissel,cardswap")
+            self.assertEqual(sent, ["Cardswap monitor actief: 2 deals nu"])
 
 
 class LoopTest(unittest.TestCase):
