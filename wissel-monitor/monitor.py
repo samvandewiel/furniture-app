@@ -325,9 +325,14 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
             # Eerste keer voor deze bron: één samenvatting in plaats van een melding per deal.
             count = sum(1 for l in listings if l.source == source)
             if source_new:
-                body = "\n\n".join(fmt(d) for d in source_new[:10])
-                if len(source_new) > 10:
-                    body += f"\n\n…en nog {len(source_new) - 10} meer"
+                # Identieke bonnen (bijv. 5x "Apple €50 voor €46") als één regel tonen.
+                lines: dict[str, int] = {}
+                for deal in source_new:
+                    lines[fmt(deal)] = lines.get(fmt(deal), 0) + 1
+                parts = [(f"{n}x " if n > 1 else "") + line for line, n in lines.items()]
+                body = "\n\n".join(parts[:10])
+                if len(parts) > 10:
+                    body += f"\n\n…en nog {len(parts) - 10} meer"
                 send_ntfy(f"{name} monitor actief: {len(source_new)} deals nu", body, click=source_new[0].url, priority=3)
             else:
                 send_ntfy(f"{name} monitor actief", f"Ik volg {count} listings. Er is nu geen deal die aan je criteria voldoet; "

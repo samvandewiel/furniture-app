@@ -158,9 +158,19 @@ class MainTest(unittest.TestCase):
             both = "wissel,cardswap"
             first = self.run_main(PAGES, state, CARDSWAP, sources=both)
             self.assertEqual(first, ["Wissel monitor actief: 2 deals nu", "Cardswap monitor actief: 2 deals nu"])
+
             self.assertEqual(self.run_main(PAGES, state, CARDSWAP, sources=both), [])
             more = dict(CARDSWAP, coolblue=CARDSWAP["coolblue"] + [cardswap_product(8, "Coolblue 50 euro", "46.00")])
             self.assertEqual(self.run_main(PAGES, state, more, sources=both), ["Cardswap · Coolblue: 8.0% korting"])
+
+    def test_summary_groups_identical_cards(self):
+        bodies = []
+        cards = {"apple": [cardswap_product(i, "Apple 50 euro", "46.00") for i in range(1, 4)]}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(monitor, "fetch_cardswap", return_value=monitor.parse_cardswap(cards["apple"], "apple")), \
+             mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: bodies.append(m)):
+            monitor.check_once(Path(d) / "s.json", [], 5, 50, ("cardswap",), ("apple",))
+        self.assertEqual(bodies, ["3x Apple €50 voor €46 (8.0% korting)"])
 
     def test_empty_cardswap_is_fine(self):
         with tempfile.TemporaryDirectory() as d:
