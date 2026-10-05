@@ -14,7 +14,9 @@ on:
         default: false
 
 concurrency:
-  group: wissel-monitor
+  # Testruns krijgen een eigen groep, zodat ze niet wachten op (of de opvolger verdringen
+  # van) de doorlopende monitor.
+  group: wissel-monitor-${{ github.ref }}-${{ inputs.dry_run && 'test' || 'live' }}
   cancel-in-progress: false
 
 permissions:
