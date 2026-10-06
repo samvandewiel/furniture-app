@@ -14,7 +14,9 @@ on:
         default: false
 
 concurrency:
-  group: wissel-monitor
+  # Testruns krijgen een eigen groep, zodat ze niet wachten op (of de opvolger verdringen
+  # van) de doorlopende monitor.
+  group: wissel-monitor-${{ github.ref }}-${{ inputs.dry_run && 'test' || 'live' }}
   cancel-in-progress: false
 
 permissions:
@@ -42,13 +44,15 @@ jobs:
           key: wissel-state-${{ github.run_id }}
           restore-keys: wissel-state-
 
-      - name: Wissel.nl checken
+      - name: Wissel.nl en Cardswap checken
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
           BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
           CHECK_INTERVAL: ${{ vars.CHECK_INTERVAL || '120' }}
+          SOURCES: ${{ vars.SOURCES || 'wissel,cardswap' }}
+          CARDSWAP_COLLECTIONS: ${{ vars.CARDSWAP_COLLECTIONS || 'apple,bol-com,bol-com-copy,coolblue' }}
           RUN_MINUTES: ${{ inputs.dry_run && '0' || '330' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           PYTHONUNBUFFERED: "1"
