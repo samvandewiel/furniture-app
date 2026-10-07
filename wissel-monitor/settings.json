@@ -1,7 +1,7 @@
 {
  "cardswap": {
-  "min_discount": 5,
-  "min_value": 50
+  "min_discount": 7,
+  "min_value": 40
  },
  "wissel": {
   "min_discount": 5,
