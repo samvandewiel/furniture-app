@@ -223,7 +223,8 @@ class ThresholdTest(unittest.TestCase):
 
     def test_describe(self):
         self.assertEqual(monitor.describe_thresholds({"wissel": (50, 5), "cardswap": (25, 4.9)}),
-                         "Wissel: vanaf €50, meer dan 5% korting\nCardswap: vanaf €25, meer dan 4.9% korting")
+                         "Wissel: vanaf €50, meer dan 5% korting\nCardswap: vanaf €25, meer dan 4,9% korting")
+        self.assertIn("vanaf €12,50", monitor.describe_thresholds({"wissel": (12.5, 5)}))
 
     def test_read_settings_keeps_last_on_error(self):
         self.addCleanup(setattr, monitor, "_last_settings", {})
@@ -236,14 +237,36 @@ class ThresholdTest(unittest.TestCase):
 
 
 class UpdateSettingsTest(unittest.TestCase):
-    def test_apply_choices(self):
+    OLD = {"wissel": {"min_value": 50, "min_discount": 4.9}, "cardswap": {"min_value": 40, "min_discount": 7}}
+
+    def apply(self, **env):
         import update_settings
-        old = {"wissel": {"min_value": 50, "min_discount": 5}}
-        env = {"WISSEL_MIN_VALUE": "ongewijzigd", "WISSEL_MIN_DISCOUNT": "4.9",
-               "CARDSWAP_MIN_VALUE": "25", "CARDSWAP_MIN_DISCOUNT": ""}
-        new = update_settings.apply_choices(old, env, ["wissel", "cardswap"])
-        self.assertEqual(new, {"wissel": {"min_value": 50, "min_discount": 4.9}, "cardswap": {"min_value": 25}})
-        self.assertEqual(old, {"wissel": {"min_value": 50, "min_discount": 5}})  # origineel ongemoeid
+        return update_settings.apply_choices(self.OLD, env, ["wissel", "cardswap"], {"min_value": 50, "min_discount": 5})
+
+    def test_nothing_chosen(self):
+        self.assertEqual(self.apply(WISSEL_MIN_VALUE="ongewijzigd", WISSEL_MIN_VALUE_DEC="ongewijzigd"), self.OLD)
+
+    def test_whole_and_decimals(self):
+        new = self.apply(CARDSWAP_MIN_VALUE="24", CARDSWAP_MIN_VALUE_DEC=",95",
+                         CARDSWAP_MIN_DISCOUNT="6", CARDSWAP_MIN_DISCOUNT_DEC=",5")
+        self.assertEqual(new["cardswap"], {"min_value": 24.95, "min_discount": 6.5})
+        self.assertEqual(new["wissel"], self.OLD["wissel"])
+
+    def test_only_whole_means_exactly_that(self):
+        self.assertEqual(self.apply(WISSEL_MIN_DISCOUNT="7")["wissel"]["min_discount"], 7)  # niet 7,9
+
+    def test_only_decimals_keeps_whole(self):
+        self.assertEqual(self.apply(CARDSWAP_MIN_DISCOUNT_DEC=",5")["cardswap"]["min_discount"], 7.5)
+        self.assertEqual(self.apply(WISSEL_MIN_DISCOUNT_DEC=",0")["wissel"]["min_discount"], 4)
+
+    def test_missing_platform_uses_defaults(self):
+        import update_settings
+        new = update_settings.apply_choices({}, {"WISSEL_MIN_DISCOUNT_DEC": ",9"}, ["wissel"], {"min_value": 50, "min_discount": 5})
+        self.assertEqual(new, {"wissel": {"min_discount": 5.9}})
+
+    def test_original_untouched(self):
+        self.apply(WISSEL_MIN_VALUE="10")
+        self.assertEqual(self.OLD["wissel"]["min_value"], 50)
 
 
 class LoopTest(unittest.TestCase):

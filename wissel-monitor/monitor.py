@@ -290,7 +290,7 @@ def thresholds_for(sources, settings: dict, default_value: float, default_discou
 
 def describe_thresholds(thresholds: dict[str, tuple[float, float]]) -> str:
     return "\n".join(
-        f"{SOURCE_NAMES.get(src, src)}: vanaf {euro(value)}, meer dan {discount:g}% korting"
+        f"{SOURCE_NAMES.get(src, src)}: vanaf {euro(value)}, meer dan {f'{discount:g}'.replace('.', ',')}% korting"
         for src, (value, discount) in thresholds.items()
     )
 
