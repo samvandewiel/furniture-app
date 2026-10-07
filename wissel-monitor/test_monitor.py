@@ -104,6 +104,7 @@ class CardswapTest(unittest.TestCase):
 
 class MainTest(unittest.TestCase):
     COLLECTIONS = "apple,bol-com,bol-com-copy,coolblue"
+    settings: dict = {}
 
     def run_main(self, pages, state_file, cardswap=None, fetch_error=None, sources="wissel"):
         sent = []
@@ -119,6 +120,7 @@ class MainTest(unittest.TestCase):
 
         env = {"STATE_FILE": str(state_file), "SOURCES": sources, "CARDSWAP_COLLECTIONS": self.COLLECTIONS}
         with mock.patch.object(monitor, "fetch_html", side_effect=fake_fetch), \
+             mock.patch.object(monitor, "read_settings", return_value=self.settings), \
              mock.patch.object(monitor.time, "sleep"), \
              mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: sent.append(t)), \
              mock.patch.dict(os.environ, env):
@@ -189,6 +191,59 @@ class MainTest(unittest.TestCase):
             state.write_text(json.dumps(old))
             sent = self.run_main(PAGES, state, CARDSWAP, sources="wissel,cardswap")
             self.assertEqual(sent, ["Cardswap monitor actief: 2 deals nu"])
+
+
+class ThresholdTest(unittest.TestCase):
+    CARDS = {"bol-com-copy": [cardswap_product(9, "Bol.com 25 euro", "23.00")]}  # 8%, maar €25
+
+    def run_check(self, thresholds, state_dir):
+        sent = []
+        listings = monitor.parse_cardswap(self.CARDS["bol-com-copy"], "bol")
+        with mock.patch.object(monitor, "fetch_cardswap", return_value=listings), \
+             mock.patch.object(monitor, "send_ntfy", side_effect=lambda t, m, **k: sent.append(t)):
+            monitor.check_once(Path(state_dir) / "s.json", [], 5, 50, ("cardswap",), (), thresholds)
+        return sent
+
+    def test_per_platform_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.run_check(None, d), ["Cardswap monitor actief"])  # €25 < €50
+            # Drempel voor Cardswap omlaag: de bestaande €25-bon wordt nu alsnog gemeld.
+            self.assertEqual(self.run_check({"cardswap": (25, 5)}, d), ["Cardswap · Bol.com: 8.0% korting"])
+            self.assertEqual(self.run_check({"cardswap": (25, 5)}, d), [])
+
+    def test_per_platform_discount(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_check({"cardswap": (0, 10)}, d)
+            self.assertEqual(self.run_check({"cardswap": (0, 10)}, d), [])  # 8% is niet > 10%
+
+    def test_thresholds_for(self):
+        settings = {"cardswap": {"min_value": 25}, "wissel": {"min_value": "x"}}
+        self.assertEqual(monitor.thresholds_for(["wissel", "cardswap", "andere"], settings, 50, 5),
+                         {"wissel": (50, 5), "cardswap": (25.0, 5), "andere": (50, 5)})
+
+    def test_describe(self):
+        self.assertEqual(monitor.describe_thresholds({"wissel": (50, 5), "cardswap": (25, 4.9)}),
+                         "Wissel: vanaf €50, meer dan 5% korting\nCardswap: vanaf €25, meer dan 4.9% korting")
+
+    def test_read_settings_keeps_last_on_error(self):
+        self.addCleanup(setattr, monitor, "_last_settings", {})
+        ok = mock.MagicMock()
+        ok.__enter__.return_value = io.BytesIO(b'{"cardswap": {"min_value": 25}}')
+        env = {"SETTINGS_REPO": "o/r", "GH_TOKEN": "t"}
+        with mock.patch.dict(os.environ, env), mock.patch("urllib.request.urlopen", side_effect=[ok, urllib.error.URLError("weg")]):
+            self.assertEqual(monitor.read_settings(), {"cardswap": {"min_value": 25}})
+            self.assertEqual(monitor.read_settings(), {"cardswap": {"min_value": 25}})
+
+
+class UpdateSettingsTest(unittest.TestCase):
+    def test_apply_choices(self):
+        import update_settings
+        old = {"wissel": {"min_value": 50, "min_discount": 5}}
+        env = {"WISSEL_MIN_VALUE": "ongewijzigd", "WISSEL_MIN_DISCOUNT": "4.9",
+               "CARDSWAP_MIN_VALUE": "25", "CARDSWAP_MIN_DISCOUNT": ""}
+        new = update_settings.apply_choices(old, env, ["wissel", "cardswap"])
+        self.assertEqual(new, {"wissel": {"min_value": 50, "min_discount": 4.9}, "cardswap": {"min_value": 25}})
+        self.assertEqual(old, {"wissel": {"min_value": 50, "min_discount": 5}})  # origineel ongemoeid
 
 
 class LoopTest(unittest.TestCase):

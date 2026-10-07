@@ -1,0 +1,84 @@
+name: Monitor instellingen
+
+# Popup (Actions → Monitor instellingen → Run workflow) om per platform de drempels te
+# kiezen. De keuzes komen in wissel-monitor/settings.json; de draaiende monitor leest dat
+# bestand bij elke check opnieuw, dus een wijziging telt binnen ~2 minuten mee.
+on:
+  workflow_dispatch:
+    inputs:
+      wissel_min_value:
+        description: "Wissel – minimale waarde van de bon (€)"
+        type: choice
+        default: ongewijzigd
+        options: [ongewijzigd, "0", "10", "20", "25", "30", "40", "50", "75", "100", "150", "200"]
+      wissel_min_discount:
+        description: "Wissel – korting moet hóger zijn dan (%) · 4.9 = vanaf 5%"
+        type: choice
+        default: ongewijzigd
+        options: [ongewijzigd, "0", "3", "4", "4.9", "5", "6", "7", "8", "10", "12", "15", "20"]
+      cardswap_min_value:
+        description: "Cardswap – minimale waarde van de bon (€)"
+        type: choice
+        default: ongewijzigd
+        options: [ongewijzigd, "0", "10", "20", "25", "30", "40", "50", "75", "100", "150", "200"]
+      cardswap_min_discount:
+        description: "Cardswap – korting moet hóger zijn dan (%) · 4.9 = vanaf 5%"
+        type: choice
+        default: ongewijzigd
+        options: [ongewijzigd, "0", "3", "4", "4.9", "5", "6", "7", "8", "10", "12", "15", "20"]
+
+concurrency:
+  group: monitor-instellingen
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # om settings.json te committen
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: wissel-monitor
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instellingen bijwerken
+        id: settings
+        env:
+          MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
+          MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
+          WISSEL_MIN_VALUE: ${{ inputs.wissel_min_value }}
+          WISSEL_MIN_DISCOUNT: ${{ inputs.wissel_min_discount }}
+          CARDSWAP_MIN_VALUE: ${{ inputs.cardswap_min_value }}
+          CARDSWAP_MIN_DISCOUNT: ${{ inputs.cardswap_min_discount }}
+        run: python update_settings.py
+
+      - name: Opslaan in de repo
+        if: steps.settings.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add settings.json
+          git commit -m "Monitor-instellingen bijgewerkt door ${{ github.actor }}"
+          git push origin HEAD:master
+
+      - name: Bevestiging naar telefoon
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          CHANGED: ${{ steps.settings.outputs.changed }}
+          SUMMARY: ${{ steps.settings.outputs.summary }}
+        run: |
+          python - <<'EOF'
+          import os
+          import monitor
+          title = "Instellingen aangepast" if os.environ["CHANGED"] == "true" else "Instellingen ongewijzigd"
+          monitor.send_ntfy(title, os.environ["SUMMARY"] + "\nGeldt binnen ~2 minuten.", priority=2)
+          EOF
