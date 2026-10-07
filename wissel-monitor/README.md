@@ -37,12 +37,15 @@ direct naar die bon. Cardswap heeft geen MediaMarkt; een lege collectie (alles v
 ### Drempels per platform (popup)
 
 Ga naar *Actions → Monitor instellingen → Run workflow* (werkt ook in de GitHub-app).
-Je krijgt per platform twee keuzelijsten:
+Per platform stel je twee drempels in, elk met een keuzelijst vóór en één ná de komma:
 
-- **minimale waarde** van de bon in euro;
-- **korting moet hóger zijn dan** dit percentage (`4.9` = vanaf 5%).
+- **minimale waarde** van de bon: hele euro's + centen (bijv. `24` en `,95` = €24,95);
+- **korting moet hóger zijn dan**: hele procenten + achter de komma (bijv. `4` en `,9` =
+  meer dan 4,9%, dus vanaf 5%).
 
-Laat een veld op `ongewijzigd` staan om het niet aan te passen. Je keuze komt in
+Laat beide lijsten van een drempel op `ongewijzigd` staan om hem niet aan te passen. Kies je
+alleen het hele getal, dan is het deel na de komma 0; kies je alleen na de komma, dan blijft
+het hele getal staan. Je keuze komt in
 `wissel-monitor/settings.json`; de draaiende monitor leest dat bij elke check opnieuw, dus
 het geldt binnen ~2 minuten, zonder herstart. Je krijgt een bevestiging via ntfy.
 Verlaag je een drempel, dan krijg je ook meldingen voor bonnen die er al stonden en nu

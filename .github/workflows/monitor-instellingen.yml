@@ -1,31 +1,52 @@
 name: Monitor instellingen
 
 # Popup (Actions → Monitor instellingen → Run workflow) om per platform de drempels te
-# kiezen. De keuzes komen in wissel-monitor/settings.json; de draaiende monitor leest dat
-# bestand bij elke check opnieuw, dus een wijziging telt binnen ~2 minuten mee.
+# kiezen, met per getal een keuzelijst vóór en één ná de komma. Kies je alleen het hele
+# getal, dan is het deel na de komma 0. De keuzes komen in wissel-monitor/settings.json; de
+# draaiende monitor leest dat bij elke check opnieuw, dus een wijziging telt binnen ~2 min mee.
 on:
   workflow_dispatch:
     inputs:
       wissel_min_value:
-        description: "Wissel – minimale waarde van de bon (€)"
+        description: "Wissel – minimale waarde: hele euro's (€)"
         type: choice
         default: ongewijzigd
-        options: [ongewijzigd, "0", "10", "20", "25", "30", "40", "50", "75", "100", "150", "200"]
+        options: ["ongewijzigd", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72", "73", "74", "75", "76", "77", "78", "79", "80", "81", "82", "83", "84", "85", "86", "87", "88", "89", "90", "91", "92", "93", "94", "95", "96", "97", "98", "99", "100", "110", "120", "130", "140", "150", "160", "170", "180", "190", "200", "210", "220", "230", "240", "250", "260", "270", "280", "290", "300"]
+      wissel_min_value_dec:
+        description: "Wissel – minimale waarde: centen"
+        type: choice
+        default: ongewijzigd
+        options: ["ongewijzigd", ",00", ",05", ",10", ",15", ",20", ",25", ",30", ",35", ",40", ",45", ",50", ",55", ",60", ",65", ",70", ",75", ",80", ",85", ",90", ",95"]
       wissel_min_discount:
-        description: "Wissel – korting moet hóger zijn dan (%) · 4.9 = vanaf 5%"
+        description: "Wissel – korting hóger dan: hele procenten (%)"
         type: choice
         default: ongewijzigd
-        options: [ongewijzigd, "0", "3", "4", "4.9", "5", "6", "7", "8", "10", "12", "15", "20"]
+        options: ["ongewijzigd", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30"]
+      wissel_min_discount_dec:
+        description: "Wissel – korting hóger dan: achter de komma"
+        type: choice
+        default: ongewijzigd
+        options: ["ongewijzigd", ",0", ",1", ",2", ",3", ",4", ",5", ",6", ",7", ",8", ",9"]
       cardswap_min_value:
-        description: "Cardswap – minimale waarde van de bon (€)"
+        description: "Cardswap – minimale waarde: hele euro's (€)"
         type: choice
         default: ongewijzigd
-        options: [ongewijzigd, "0", "10", "20", "25", "30", "40", "50", "75", "100", "150", "200"]
+        options: ["ongewijzigd", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72", "73", "74", "75", "76", "77", "78", "79", "80", "81", "82", "83", "84", "85", "86", "87", "88", "89", "90", "91", "92", "93", "94", "95", "96", "97", "98", "99", "100", "110", "120", "130", "140", "150", "160", "170", "180", "190", "200", "210", "220", "230", "240", "250", "260", "270", "280", "290", "300"]
+      cardswap_min_value_dec:
+        description: "Cardswap – minimale waarde: centen"
+        type: choice
+        default: ongewijzigd
+        options: ["ongewijzigd", ",00", ",05", ",10", ",15", ",20", ",25", ",30", ",35", ",40", ",45", ",50", ",55", ",60", ",65", ",70", ",75", ",80", ",85", ",90", ",95"]
       cardswap_min_discount:
-        description: "Cardswap – korting moet hóger zijn dan (%) · 4.9 = vanaf 5%"
+        description: "Cardswap – korting hóger dan: hele procenten (%)"
         type: choice
         default: ongewijzigd
-        options: [ongewijzigd, "0", "3", "4", "4.9", "5", "6", "7", "8", "10", "12", "15", "20"]
+        options: ["ongewijzigd", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30"]
+      cardswap_min_discount_dec:
+        description: "Cardswap – korting hóger dan: achter de komma"
+        type: choice
+        default: ongewijzigd
+        options: ["ongewijzigd", ",0", ",1", ",2", ",3", ",4", ",5", ",6", ",7", ",8", ",9"]
 
 concurrency:
   group: monitor-instellingen
@@ -56,9 +77,13 @@ jobs:
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           WISSEL_MIN_VALUE: ${{ inputs.wissel_min_value }}
+          WISSEL_MIN_VALUE_DEC: ${{ inputs.wissel_min_value_dec }}
           WISSEL_MIN_DISCOUNT: ${{ inputs.wissel_min_discount }}
+          WISSEL_MIN_DISCOUNT_DEC: ${{ inputs.wissel_min_discount_dec }}
           CARDSWAP_MIN_VALUE: ${{ inputs.cardswap_min_value }}
+          CARDSWAP_MIN_VALUE_DEC: ${{ inputs.cardswap_min_value_dec }}
           CARDSWAP_MIN_DISCOUNT: ${{ inputs.cardswap_min_discount }}
+          CARDSWAP_MIN_DISCOUNT_DEC: ${{ inputs.cardswap_min_discount_dec }}
         run: python update_settings.py
 
       - name: Opslaan in de repo
