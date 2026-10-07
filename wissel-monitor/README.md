@@ -34,6 +34,22 @@ direct naar die bon. Cardswap heeft geen MediaMarkt; een lege collectie (alles v
 
 ## Instellingen aanpassen
 
+### Drempels per platform (popup)
+
+Ga naar *Actions → Monitor instellingen → Run workflow* (werkt ook in de GitHub-app).
+Je krijgt per platform twee keuzelijsten:
+
+- **minimale waarde** van de bon in euro;
+- **korting moet hóger zijn dan** dit percentage (`4.9` = vanaf 5%).
+
+Laat een veld op `ongewijzigd` staan om het niet aan te passen. Je keuze komt in
+`wissel-monitor/settings.json`; de draaiende monitor leest dat bij elke check opnieuw, dus
+het geldt binnen ~2 minuten, zonder herstart. Je krijgt een bevestiging via ntfy.
+Verlaag je een drempel, dan krijg je ook meldingen voor bonnen die er al stonden en nu
+wél aan de drempel voldoen.
+
+### Overige instellingen
+
 Wil je testen zonder meldingen? Vink bij *Run workflow* de optie
 "Alleen testen" aan; dan doet hij één check en staan de gevonden deals in de log.
 
@@ -46,8 +62,8 @@ Onder *Settings → Secrets and variables → Actions → Variables* (optioneel)
 
 | Variabele      | Standaard                          | Betekenis                          |
 |----------------|------------------------------------|------------------------------------|
-| `MIN_DISCOUNT` | `5`                                | korting moet hóger zijn dan dit (%) |
-| `MIN_VALUE`    | `50`                               | minimale waarde van de bon (€)      |
+| `MIN_DISCOUNT` | `5`                                | standaard korting-drempel (%), als een platform niets in settings.json heeft |
+| `MIN_VALUE`    | `50`                               | standaard waarde-drempel (€), als een platform niets in settings.json heeft |
 | `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
 | `CHECK_INTERVAL` | `120`                            | seconden tussen twee checks          |
 | `SOURCES`      | `wissel,cardswap`                  | welke sites                          |

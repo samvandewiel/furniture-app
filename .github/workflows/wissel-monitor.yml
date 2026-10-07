@@ -56,6 +56,9 @@ jobs:
           RUN_MINUTES: ${{ inputs.dry_run && '0' || '330' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           PYTHONUNBUFFERED: "1"
+          # Drempels per platform live uit settings.json op master (workflow "Monitor instellingen").
+          SETTINGS_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: python monitor.py
 
       - name: Staat opslaan

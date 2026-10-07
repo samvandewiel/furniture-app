@@ -13,6 +13,8 @@ Configuratie via omgevingsvariabelen:
   NTFY_SERVER     standaard https://ntfy.sh
   MIN_DISCOUNT    minimale korting in procent, strikt groter dan (standaard 5)
   MIN_VALUE       minimale nominale waarde in euro (standaard 50)
+                  Per platform overschreven door settings.json (zie workflow "Monitor instellingen").
+  SETTINGS_REPO   owner/repo om settings.json live van GitHub te lezen (met GH_TOKEN); anders lokaal
   BRANDS          komma-gescheiden merken of wissel.nl-slugs (standaard coolblue,apple,mediamarkt,bol)
   SOURCES         welke sites (standaard wissel,cardswap)
   CARDSWAP_COLLECTIONS  cardswap-collecties (standaard apple,bol-com,bol-com-copy,coolblue)
@@ -241,6 +243,58 @@ def fetch_source(source: str, brands: list[str], collections: list[str]) -> list
     raise ValueError(f"onbekende bron: {source}")
 
 
+SETTINGS_FILE = Path(__file__).with_name("settings.json")
+DEFAULT_MIN_VALUE = float(os.environ.get("MIN_VALUE", "50"))
+DEFAULT_MIN_DISCOUNT = float(os.environ.get("MIN_DISCOUNT", "5"))
+_last_settings: dict = {}
+
+
+def read_settings() -> dict:
+    """settings.json: {"wissel": {"min_value": 50, "min_discount": 5}, "cardswap": {...}}.
+
+    In de doorlopende run komt het bestand live van GitHub, zodat een wijziging via de
+    workflow "Monitor instellingen" binnen één check meetelt. Lukt dat niet, dan geldt de
+    laatst bekende versie, daarna het lokale bestand.
+    """
+    global _last_settings
+    repo, token = os.environ.get("SETTINGS_REPO"), os.environ.get("GH_TOKEN")
+    try:
+        if repo and token:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/contents/wissel-monitor/settings.json?ref=master",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
+                         "User-Agent": "wissel-monitor"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                _last_settings = json.load(resp)
+        elif SETTINGS_FILE.exists():
+            _last_settings = json.loads(SETTINGS_FILE.read_text())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as err:
+        print(f"::warning::settings.json niet te lezen, vorige instellingen blijven gelden: {err}")
+        if not _last_settings and SETTINGS_FILE.exists():
+            _last_settings = json.loads(SETTINGS_FILE.read_text())
+    return _last_settings
+
+
+def thresholds_for(sources, settings: dict, default_value: float, default_discount: float) -> dict[str, tuple[float, float]]:
+    """Per bron: (minimale waarde in euro, korting moet hoger zijn dan dit percentage)."""
+    result = {}
+    for source in sources:
+        conf = settings.get(source, {}) if isinstance(settings.get(source), dict) else {}
+        try:
+            result[source] = (float(conf.get("min_value", default_value)), float(conf.get("min_discount", default_discount)))
+        except (TypeError, ValueError):
+            result[source] = (default_value, default_discount)
+    return result
+
+
+def describe_thresholds(thresholds: dict[str, tuple[float, float]]) -> str:
+    return "\n".join(
+        f"{SOURCE_NAMES.get(src, src)}: vanaf {euro(value)}, meer dan {discount:g}% korting"
+        for src, (value, discount) in thresholds.items()
+    )
+
+
 def is_deal(listing: Listing, min_discount: float, min_value: float) -> bool:
     # Afronden voorkomt dat 4,999...% door floating point als "boven 5%" telt.
     return listing.face_value >= min_value and round(listing.discount, 2) > min_discount
@@ -287,7 +341,9 @@ def load_state(path: Path) -> dict:
 
 
 def check_once(state_path: Path, brands: list[str], min_discount: float, min_value: float,
-               sources: tuple[str, ...] = ("wissel",), collections: tuple[str, ...] = ()) -> None:
+               sources: tuple[str, ...] = ("wissel",), collections: tuple[str, ...] = (),
+               thresholds: dict[str, tuple[float, float]] | None = None) -> None:
+    thresholds = thresholds or {}
     state = load_state(state_path)
     seen: dict = state.get("seen", {})
     # Oude staat (alleen wissel) had geen "sources" en "failures" als getal.
@@ -314,7 +370,11 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
         listings += found
         ok_sources.append(source)
 
-    deals = [l for l in listings if is_deal(l, min_discount, min_value)]
+    def deal(listing: Listing) -> bool:
+        value, discount = thresholds.get(listing.source, (min_value, min_discount))
+        return is_deal(listing, discount, value)
+
+    deals = [l for l in listings if deal(l)]
     new_deals = [d for d in deals if d.key not in seen]
     print(f"{time.strftime('%H:%M:%S')} {len(listings)} listings; {len(deals)} deals; {len(new_deals)} nieuw")
 
@@ -355,8 +415,8 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
 
 
 def main() -> int:
-    min_discount = float(os.environ.get("MIN_DISCOUNT", "5"))
-    min_value = float(os.environ.get("MIN_VALUE", "50"))
+    min_discount = float(os.environ.get("MIN_DISCOUNT", str(DEFAULT_MIN_DISCOUNT)))
+    min_value = float(os.environ.get("MIN_VALUE", str(DEFAULT_MIN_VALUE)))
     brands = [b.strip().lower() for b in os.environ.get("BRANDS", "coolblue,apple,mediamarkt,bol").split(",") if b.strip()]
     state_path = Path(os.environ.get("STATE_FILE", "state.json"))
     run_seconds = float(os.environ.get("RUN_MINUTES", "0")) * 60
@@ -368,10 +428,15 @@ def main() -> int:
     # GitHub start geplande runs vaak uren te laat. Daarom blijft één run een paar uur
     # draaien en checkt hij zelf elke paar minuten.
     deadline = time.monotonic() + run_seconds
+    shown = None
     while True:
         started = time.monotonic()
         try:
-            check_once(state_path, brands, min_discount, min_value, sources, collections)
+            thresholds = thresholds_for(sources, read_settings(), min_value, min_discount)
+            if thresholds != shown:
+                print("Drempels:\n" + describe_thresholds(thresholds))
+                shown = thresholds
+            check_once(state_path, brands, min_discount, min_value, sources, collections, thresholds)
         except Exception:
             if not run_seconds:
                 raise
