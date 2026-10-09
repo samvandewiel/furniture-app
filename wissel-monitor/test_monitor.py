@@ -74,9 +74,27 @@ CARDSWAP = {
               cardswap_product(2, "Apple 25 euro", "20.00")],           # < €50
     "coolblue": [cardswap_product(3, "Coolblue 100 euro", "96.00"),     # 4% -> nee
                  cardswap_product(4, "Coolblue 50 euro", "40.00", available=False)],
-    "bol-com": [cardswap_product(5, "Bol.com 75 euro", "69.00")],       # 8% -> deal
-    "bol-com-copy": [cardswap_product(5, "Bol.com 75 euro", "69.00")],  # zelfde product, dubbel
+    "bol-com-copy": [cardswap_product(5, "Bol.com 75 euro", "69.00")],  # 8% -> deal
 }
+
+
+CARDSWAP_COLLECTIONS = [
+    {"handle": "apple", "title": "Apple"},
+    {"handle": "bol-com-copy", "title": "Bol.com"},
+    {"handle": "coolblue", "title": "Coolblue"},
+    {"handle": "zalando", "title": "Zalando"},
+    {"handle": "h-m", "title": "H&M"},
+]
+
+
+def cardswap_fetch(cardswap, collections=CARDSWAP_COLLECTIONS):
+    """Nep-cardswap: /collections.json en /collections/<handle>/products.json."""
+    def fetch(url, accept="text/html"):
+        if "/collections.json" in url:
+            return json.dumps({"collections": collections})
+        handle = url.split("/collections/")[1].split("/")[0]
+        return json.dumps({"products": (cardswap or {}).get(handle, [])})
+    return fetch
 
 
 class CardswapTest(unittest.TestCase):
@@ -96,6 +114,40 @@ class CardswapTest(unittest.TestCase):
         [l] = monitor.parse_cardswap([p], "apple")
         self.assertEqual(l.face_value, 60.0)
 
+    def setUp(self):
+        monitor._discovered.update(at=None, collections={})
+
+    def test_discover_only_followed_brands(self):
+        with mock.patch.object(monitor, "fetch_html", side_effect=cardswap_fetch({})):
+            found = monitor.discover_cardswap(["coolblue", "apple", "mediamarkt", "bol"])
+        self.assertEqual(found, {"apple": "apple", "bol-com-copy": "bol", "coolblue": "coolblue"})
+
+    def test_new_mediamarkt_collection_is_picked_up(self):
+        brands = ["coolblue", "apple", "mediamarkt", "bol"]
+        later = CARDSWAP_COLLECTIONS + [{"handle": "media-markt-1", "title": "Media Markt"}]
+        cards = {"media-markt-1": [cardswap_product(11, "MediaMarkt 100 euro", "90.00")]}
+        clock = [0.0]
+        with mock.patch.object(monitor.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(monitor.time, "sleep"):
+            with mock.patch.object(monitor, "fetch_html", side_effect=cardswap_fetch(cards)):
+                self.assertNotIn("media-markt-1", monitor.discover_cardswap(brands))
+            clock[0] += monitor.DISCOVER_EVERY + 1  # na een half uur opnieuw kijken
+            with mock.patch.object(monitor, "fetch_html", side_effect=cardswap_fetch(cards, later)):
+                found = monitor.fetch_cardswap([], brands)
+        self.assertEqual([(l.brand, l.face_value) for l in found], [("mediamarkt", 100.0)])
+
+    def test_discover_failure_falls_back(self):
+        with mock.patch.object(monitor, "fetch_html", side_effect=monitor.FetchError("HTTP 500")):
+            found = monitor.discover_cardswap(["coolblue", "bol"])
+        self.assertEqual(found, {"bol-com-copy": "bol", "coolblue": "coolblue"})
+
+    def test_extra_collections_still_included(self):
+        cards = {"zalando": [cardswap_product(12, "Zalando 50 euro", "40.00")]}
+        with mock.patch.object(monitor, "fetch_html", side_effect=cardswap_fetch(cards)), \
+             mock.patch.object(monitor.time, "sleep"):
+            found = monitor.fetch_cardswap(["zalando"], ["coolblue"])
+        self.assertEqual([l.key for l in found], ["cardswap:120"])
+
     def test_collection_brand(self):
         self.assertEqual(monitor.collection_brand("bol-com-copy"), "bol")
         self.assertEqual(monitor.collection_brand("coolblue"), "coolblue")
@@ -103,18 +155,18 @@ class CardswapTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    COLLECTIONS = "apple,bol-com,bol-com-copy,coolblue"
+    COLLECTIONS = ""
     settings: dict = {}
 
     def run_main(self, pages, state_file, cardswap=None, fetch_error=None, sources="wissel"):
+        monitor._discovered.update(at=None, collections={})
         sent = []
 
         def fake_fetch(url, accept="text/html"):
             if fetch_error:
                 raise fetch_error
             if "cardswap" in url:
-                handle = url.split("/collections/")[1].split("/")[0]
-                return json.dumps({"products": (cardswap or {}).get(handle, [])})
+                return cardswap_fetch(cardswap)(url)
             brand = next(b for b in monitor.BRAND_SLUGS if url.endswith("/" + monitor.brand_info(b)[0]))
             return pages.get(brand, "<main></main>")
 

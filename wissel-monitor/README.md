@@ -14,10 +14,13 @@ Het script onthoudt welke deals je al hebt gezien en stuurt alleen nieuwe deals 
 Let op: listings met exact dezelfde waarde, prijs en vervaldatum vallen op wissel.nl samen.
 Komt er zo'n identieke bon bij, dan krijg je daar geen aparte melding van.
 
-**Cardswap** is een Shopify-winkel: het script leest per collectie
-`cardswap.nl/collections/<collectie>/products.json`. Daar is elke bon een eigen product
+**Cardswap** is een Shopify-winkel: het script haalt elk half uur de lijst met collecties op
+(`cardswap.nl/collections.json`), kiest daaruit zelf de collecties voor de gevolgde merken
+(Coolblue, Apple, MediaMarkt, Bol.com) en leest die via
+`cardswap.nl/collections/<collectie>/products.json`. Komt er een nieuwe collectie bij,
+bijvoorbeeld MediaMarkt, dan gaat die vanzelf mee. Daar is elke bon een eigen product
 ("Apple 50 euro" voor €46), dus elke nieuwe bon geeft een eigen melding, met een link
-direct naar die bon. Cardswap heeft geen MediaMarkt; een lege collectie (alles verkocht) is normaal.
+direct naar die bon. Een lege collectie (alles verkocht) is normaal.
 
 ## Installeren (±5 minuten)
 
@@ -70,7 +73,7 @@ Onder *Settings → Secrets and variables → Actions → Variables* (optioneel)
 | `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
 | `CHECK_INTERVAL` | `120`                            | seconden tussen twee checks          |
 | `SOURCES`      | `wissel,cardswap`                  | welke sites                          |
-| `CARDSWAP_COLLECTIONS` | `apple,bol-com,bol-com-copy,coolblue` | cardswap-collecties (laatste deel van de URL) |
+| `CARDSWAP_COLLECTIONS` | (leeg)                     | extra cardswap-collecties naast de automatisch gevonden (laatste deel van de URL) |
 
 ## Lokaal testen
 

@@ -6,7 +6,8 @@ is een blok als <div id="product-v1-b75-n5000-s4700-exp26-12-31" ...>:
 n = nominale waarde in centen, s = verkoopprijs in centen, exp = vervaldatum.
 
 cardswap.nl: een Shopify-winkel; elke bon is een eigen product ("Apple 50 euro") in de
-collectie /collections/<handle>/products.json.
+collectie /collections/<handle>/products.json. Welke collecties bij de gevolgde merken horen,
+haalt het script zelf uit /collections.json.
 
 Configuratie via omgevingsvariabelen:
   NTFY_TOPIC      ntfy.sh-topic waar meldingen heen gaan (verplicht om te versturen)
@@ -17,7 +18,7 @@ Configuratie via omgevingsvariabelen:
   SETTINGS_REPO   owner/repo om settings.json live van GitHub te lezen (met GH_TOKEN); anders lokaal
   BRANDS          komma-gescheiden merken of wissel.nl-slugs (standaard coolblue,apple,mediamarkt,bol)
   SOURCES         welke sites (standaard wissel,cardswap)
-  CARDSWAP_COLLECTIONS  cardswap-collecties (standaard apple,bol-com,bol-com-copy,coolblue)
+  CARDSWAP_COLLECTIONS  extra cardswap-collecties naast de automatisch gevonden (standaard geen)
   STATE_FILE      pad naar het bestand met al geziene listings (standaard state.json)
   RUN_MINUTES     blijf zo lang herhalen (standaard 0: één keer checken)
   CHECK_INTERVAL  seconden tussen checks in herhaalmodus (standaard 120)
@@ -179,6 +180,59 @@ def collection_brand(handle: str) -> str:
     return next((b for b in BRAND_SLUGS if b in handle.lower()), handle)
 
 
+# Herkent een merk in de naam of handle van een cardswap-collectie ("Bol.com", "media-markt").
+BRAND_MATCH = {
+    "coolblue": r"cool\s*-?\s*blue",
+    "apple": r"\bapple\b",
+    "mediamarkt": r"media\s*-?\s*markt",
+    "bol": r"\bbol\b",
+}
+# Als het ophalen van de collectielijst niet lukt en er nog niets bekend is.
+CARDSWAP_FALLBACK = {"apple": "apple", "bol-com-copy": "bol", "coolblue": "coolblue"}
+DISCOVER_EVERY = 30 * 60  # seconden; de collectielijst verandert zelden
+_discovered: dict = {"at": None, "collections": {}}
+
+
+def match_brand(text: str, brands: list[str]) -> str | None:
+    for brand in brands:
+        pattern = BRAND_MATCH.get(brand, re.escape(brand))
+        if re.search(pattern, text, re.I):
+            return brand
+    return None
+
+
+def discover_cardswap(brands: list[str]) -> dict[str, str]:
+    """Alle cardswap-collecties (handle -> merk) voor de gevolgde merken.
+
+    Zo komt een nieuwe collectie, bijv. als Cardswap ooit MediaMarkt gaat verkopen, vanzelf
+    mee. De lijst wordt hooguit elk half uur opnieuw opgehaald; lukt dat niet, dan geldt de
+    vorige lijst (of CARDSWAP_FALLBACK).
+    """
+    now = time.monotonic()
+    if _discovered["at"] is not None and now - _discovered["at"] < DISCOVER_EVERY:
+        return _discovered["collections"]
+    found: dict[str, str] = {}
+    try:
+        for page in range(1, 6):
+            url = f"{CARDSWAP_URL}/collections.json?limit=250&page={page}"
+            collections = json.loads(fetch_html(url, accept="application/json")).get("collections", [])
+            for col in collections:
+                brand = match_brand(f"{col.get('handle', '')} {col.get('title', '')}", brands)
+                if brand and col.get("handle"):
+                    found[col["handle"]] = brand
+            if len(collections) < 250:
+                break
+    except (FetchError, json.JSONDecodeError) as err:
+        print(f"::warning::Cardswap-collecties niet op te halen, vorige lijst blijft gelden: {err}")
+        if not _discovered["collections"]:
+            _discovered["collections"] = {h: b for h, b in CARDSWAP_FALLBACK.items() if b in brands}
+        return _discovered["collections"]
+    if found != _discovered["collections"]:
+        print("Cardswap-collecties: " + (", ".join(f"{h} ({b})" for h, b in found.items()) or "geen"))
+    _discovered.update(at=now, collections=found)
+    return found
+
+
 def parse_cardswap(products: list[dict], brand: str) -> list[Listing]:
     """Zet Shopify-producten van cardswap.nl om in listings."""
     listings = []
@@ -212,13 +266,19 @@ def parse_cardswap(products: list[dict], brand: str) -> list[Listing]:
     return listings
 
 
-def fetch_cardswap(collections: list[str]) -> list[Listing]:
-    """Alle listings uit de cardswap.nl-collecties; een lege collectie (uitverkocht) is normaal."""
+def fetch_cardswap(collections: list[str], brands: list[str] | None = None) -> list[Listing]:
+    """Alle listings uit de cardswap.nl-collecties; een lege collectie (uitverkocht) is normaal.
+
+    Met brands erbij worden de collecties voor die merken automatisch gevonden; collections
+    zijn dan extra collecties die altijd meegaan.
+    """
+    handles = dict(discover_cardswap(brands)) if brands else {}
+    for handle in collections:
+        handles.setdefault(handle, collection_brand(handle))
     listings: dict[str, Listing] = {}
-    for i, handle in enumerate(collections):
+    for i, (handle, brand) in enumerate(handles.items()):
         if i:
             time.sleep(2)
-        brand = collection_brand(handle)
         found: list[Listing] = []
         for page in range(1, 6):
             url = f"{CARDSWAP_URL}/collections/{handle}/products.json?limit=250&page={page}"
@@ -239,7 +299,7 @@ def fetch_source(source: str, brands: list[str], collections: list[str]) -> list
     if source == "wissel":
         return fetch_listings(brands)
     if source == "cardswap":
-        return fetch_cardswap(collections)
+        return fetch_cardswap(collections, brands)
     raise ValueError(f"onbekende bron: {source}")
 
 
@@ -423,7 +483,7 @@ def main() -> int:
     interval = float(os.environ.get("CHECK_INTERVAL", "120"))
     sources = tuple(x.strip() for x in os.environ.get("SOURCES", "wissel,cardswap").split(",") if x.strip())
     collections = tuple(x.strip() for x in os.environ.get(
-        "CARDSWAP_COLLECTIONS", "apple,bol-com,bol-com-copy,coolblue").split(",") if x.strip())
+        "CARDSWAP_COLLECTIONS", "").split(",") if x.strip())
 
     # GitHub start geplande runs vaak uren te laat. Daarom blijft één run een paar uur
     # draaien en checkt hij zelf elke paar minuten.
