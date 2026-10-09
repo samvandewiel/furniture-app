@@ -256,27 +256,50 @@ class ThresholdTest(unittest.TestCase):
             monitor.check_once(Path(state_dir) / "s.json", [], 5, 50, ("cardswap",), (), thresholds)
         return sent
 
-    def test_per_platform_value(self):
+    def test_per_brand_value(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(self.run_check(None, d), ["Cardswap monitor actief"])  # €25 < €50
-            # Drempel voor Cardswap omlaag: de bestaande €25-bon wordt nu alsnog gemeld.
-            self.assertEqual(self.run_check({"cardswap": (25, 5)}, d), ["Cardswap · Bol.com: 8.0% korting"])
-            self.assertEqual(self.run_check({"cardswap": (25, 5)}, d), [])
+            # Drempel voor Bol.com omlaag: de bestaande €25-bon wordt nu alsnog gemeld.
+            self.assertEqual(self.run_check({"bol": (25, 5)}, d), ["Cardswap · Bol.com: 8.0% korting"])
+            self.assertEqual(self.run_check({"bol": (25, 5)}, d), [])
 
-    def test_per_platform_discount(self):
+    def test_per_brand_discount(self):
         with tempfile.TemporaryDirectory() as d:
-            self.run_check({"cardswap": (0, 10)}, d)
-            self.assertEqual(self.run_check({"cardswap": (0, 10)}, d), [])  # 8% is niet > 10%
+            self.run_check({"bol": (0, 10)}, d)
+            self.assertEqual(self.run_check({"bol": (0, 10)}, d), [])  # 8% is niet > 10%
 
-    def test_thresholds_for(self):
-        settings = {"cardswap": {"min_value": 25}, "wissel": {"min_value": "x"}}
-        self.assertEqual(monitor.thresholds_for(["wissel", "cardswap", "andere"], settings, 50, 5),
-                         {"wissel": (50, 5), "cardswap": (25.0, 5), "andere": (50, 5)})
+    def test_other_brand_threshold_does_not_apply(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_check({"coolblue": (0, 0)}, d)
+            self.assertEqual(self.run_check({"coolblue": (0, 0)}, d), [])  # Bol.com valt onder standaard €50
+
+    def test_brand_settings(self):
+        self.addCleanup(monitor._brand_names.clear)
+        settings = {"standaard": {"min_value": 40, "min_discount": 6},
+                    "merken": {"Coolblue": {"naam": "Coolblue", "min_value": 25.5},
+                               "vvv": {"naam": "VVV", "min_discount": 9.9},
+                               "kapot": {"min_value": "x"}}}
+        brands, thresholds, standard = monitor.brand_settings(settings, 50, 5)
+        self.assertEqual(brands, ["coolblue", "vvv", "kapot"])
+        self.assertEqual(thresholds, {"coolblue": (25.5, 6), "vvv": (40, 9.9), "kapot": (40, 6)})
+        self.assertEqual(standard, (40, 6))
+        self.assertEqual(monitor.brand_info("vvv")[1], "VVV")
+
+    def test_old_or_empty_settings_fall_back(self):
+        old = {"wissel": {"min_value": 49}, "cardswap": {"min_value": 74.95}}
+        brands, thresholds, standard = monitor.brand_settings(old, 50, 5, ["coolblue", "bol"])
+        self.assertEqual((brands, standard), (["coolblue", "bol"], (50, 5)))
+        self.assertEqual(thresholds, {"coolblue": (50, 5), "bol": (50, 5)})
+
+    def test_repo_settings_file_is_valid(self):
+        settings = json.loads(monitor.SETTINGS_FILE.read_text())
+        brands, thresholds, _ = monitor.brand_settings(settings, 50, 5)
+        self.assertEqual(set(brands), {"coolblue", "apple", "mediamarkt", "bol"})
 
     def test_describe(self):
-        self.assertEqual(monitor.describe_thresholds({"wissel": (50, 5), "cardswap": (25, 4.9)}),
-                         "Wissel: vanaf €50, meer dan 5% korting\nCardswap: vanaf €25, meer dan 4,9% korting")
-        self.assertIn("vanaf €12,50", monitor.describe_thresholds({"wissel": (12.5, 5)}))
+        self.assertEqual(monitor.describe_thresholds({"coolblue": (50, 5), "bol": (25, 4.9)}),
+                         "Coolblue: vanaf €50, meer dan 5% korting\nBol.com: vanaf €25, meer dan 4,9% korting")
+        self.assertIn("vanaf €12,50", monitor.describe_thresholds({"apple": (12.5, 5)}))
 
     def test_read_settings_keeps_last_on_error(self):
         self.addCleanup(setattr, monitor, "_last_settings", {})
@@ -288,37 +311,23 @@ class ThresholdTest(unittest.TestCase):
             self.assertEqual(monitor.read_settings(), {"cardswap": {"min_value": 25}})
 
 
-class UpdateSettingsTest(unittest.TestCase):
-    OLD = {"wissel": {"min_value": 50, "min_discount": 4.9}, "cardswap": {"min_value": 40, "min_discount": 7}}
+class WisselSlugTest(unittest.TestCase):
+    SITEMAP = ("<urlset><url><loc>https://www.wissel.nl/kopen/cadeaubonnen-met-korting/coolblue</loc></url>"
+               "<url><loc>https://www.wissel.nl/kopen/cadeaubonnen-met-korting/vvv-cadeaukaart</loc></url>"
+               "<url><loc>https://www.wissel.nl/kopen/cadeaubonnen-met-korting/vvv-cadeaukaart-be</loc></url>"
+               "<url><loc>https://www.wissel.nl/inwisselen/cadeaubon/amazon</loc></url></urlset>")
 
-    def apply(self, **env):
-        import update_settings
-        return update_settings.apply_choices(self.OLD, env, ["wissel", "cardswap"], {"min_value": 50, "min_discount": 5})
+    def setUp(self):
+        monitor._wissel_slugs.update(at=None, slugs={})
 
-    def test_nothing_chosen(self):
-        self.assertEqual(self.apply(WISSEL_MIN_VALUE="ongewijzigd", WISSEL_MIN_VALUE_DEC="ongewijzigd"), self.OLD)
+    def test_known_brands_need_no_sitemap(self):
+        with mock.patch.object(monitor, "fetch_html", side_effect=AssertionError("geen netwerk nodig")):
+            self.assertEqual(monitor.wissel_slugs(["apple", "bol"]), {"apple-gift-card-nl": "apple", "bol": "bol"})
 
-    def test_whole_and_decimals(self):
-        new = self.apply(CARDSWAP_MIN_VALUE="24", CARDSWAP_MIN_VALUE_DEC=",95",
-                         CARDSWAP_MIN_DISCOUNT="6", CARDSWAP_MIN_DISCOUNT_DEC=",5")
-        self.assertEqual(new["cardswap"], {"min_value": 24.95, "min_discount": 6.5})
-        self.assertEqual(new["wissel"], self.OLD["wissel"])
-
-    def test_only_whole_means_exactly_that(self):
-        self.assertEqual(self.apply(WISSEL_MIN_DISCOUNT="7")["wissel"]["min_discount"], 7)  # niet 7,9
-
-    def test_only_decimals_keeps_whole(self):
-        self.assertEqual(self.apply(CARDSWAP_MIN_DISCOUNT_DEC=",5")["cardswap"]["min_discount"], 7.5)
-        self.assertEqual(self.apply(WISSEL_MIN_DISCOUNT_DEC=",0")["wissel"]["min_discount"], 4)
-
-    def test_missing_platform_uses_defaults(self):
-        import update_settings
-        new = update_settings.apply_choices({}, {"WISSEL_MIN_DISCOUNT_DEC": ",9"}, ["wissel"], {"min_value": 50, "min_discount": 5})
-        self.assertEqual(new, {"wissel": {"min_discount": 5.9}})
-
-    def test_original_untouched(self):
-        self.apply(WISSEL_MIN_VALUE="10")
-        self.assertEqual(self.OLD["wissel"]["min_value"], 50)
+    def test_new_brand_found_in_sitemap(self):
+        with mock.patch.object(monitor, "fetch_html", return_value=self.SITEMAP):
+            self.assertEqual(monitor.wissel_slugs(["coolblue", "vvv", "amazon"]),
+                             {"coolblue": "coolblue", "vvv-cadeaukaart": "vvv"})  # geen -be, geen inwisselpagina
 
 
 class LoopTest(unittest.TestCase):

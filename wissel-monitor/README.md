@@ -16,7 +16,7 @@ Komt er zo'n identieke bon bij, dan krijg je daar geen aparte melding van.
 
 **Cardswap** is een Shopify-winkel: het script haalt elk half uur de lijst met collecties op
 (`cardswap.nl/collections.json`), kiest daaruit zelf de collecties voor de gevolgde merken
-(Coolblue, Apple, MediaMarkt, Bol.com) en leest die via
+(de merken uit `settings.json`) en leest die via
 `cardswap.nl/collections/<collectie>/products.json`. Komt er een nieuwe collectie bij,
 bijvoorbeeld MediaMarkt, dan gaat die vanzelf mee. Daar is elke bon een eigen product
 ("Apple 50 euro" voor €46), dus elke nieuwe bon geeft een eigen melding, met een link
@@ -37,22 +37,29 @@ direct naar die bon. Een lege collectie (alles verkocht) is normaal.
 
 ## Instellingen aanpassen
 
-### Drempels per platform (popup)
+### Merken en drempels (`settings.json`)
 
-Ga naar *Actions → Monitor instellingen → Run workflow* (werkt ook in de GitHub-app).
-Per platform stel je twee drempels in, elk met een keuzelijst vóór en één ná de komma:
+`wissel-monitor/settings.json` bepaalt per merk de drempels, en ook wélke merken gevolgd
+worden. Elk merk in de lijst wordt op alle aangesloten sites gezocht (Wissel en Cardswap);
+een nieuw merk wordt daar automatisch opgezocht.
 
-- **minimale waarde** van de bon: hele euro's + centen (bijv. `24` en `,95` = €24,95);
-- **korting moet hóger zijn dan**: hele procenten + achter de komma (bijv. `4` en `,9` =
-  meer dan 4,9%, dus vanaf 5%).
+```json
+{
+ "standaard": {"min_value": 50, "min_discount": 5},
+ "merken": {
+  "coolblue": {"naam": "Coolblue", "min_value": 49, "min_discount": 9.9}
+ }
+}
+```
 
-Laat beide lijsten van een drempel op `ongewijzigd` staan om hem niet aan te passen. Kies je
-alleen het hele getal, dan is het deel na de komma 0; kies je alleen na de komma, dan blijft
-het hele getal staan. Je keuze komt in
-`wissel-monitor/settings.json`; de draaiende monitor leest dat bij elke check opnieuw, dus
-het geldt binnen ~2 minuten, zonder herstart. Je krijgt een bevestiging via ntfy.
-Verlaag je een drempel, dan krijg je ook meldingen voor bonnen die er al stonden en nu
-wél aan de drempel voldoen.
+- `min_value`: minimale waarde van de bon in euro (mag met decimalen, bijv. `24.95`);
+- `min_discount`: korting moet hóger zijn dan dit percentage (`4.9` = vanaf 5%);
+- `standaard`: geldt voor een merk dat zelf geen waarde heeft.
+
+Aanpassen gaat het makkelijkst door het aan Claude te vragen ("zet Bol.com op €25 en 7%"):
+die past `settings.json` op `master` aan. De draaiende monitor leest het bestand bij elke
+check opnieuw, dus het geldt binnen ~2 minuten, zonder herstart. Verlaag je een drempel, dan
+krijg je ook meldingen voor bonnen die er al stonden en nu wél aan de drempel voldoen.
 
 ### Overige instellingen
 
@@ -68,9 +75,8 @@ Onder *Settings → Secrets and variables → Actions → Variables* (optioneel)
 
 | Variabele      | Standaard                          | Betekenis                          |
 |----------------|------------------------------------|------------------------------------|
-| `MIN_DISCOUNT` | `5`                                | standaard korting-drempel (%), als een platform niets in settings.json heeft |
-| `MIN_VALUE`    | `50`                               | standaard waarde-drempel (€), als een platform niets in settings.json heeft |
-| `BRANDS`       | `coolblue,apple,mediamarkt,bol`    | merken om te volgen; andere merken via hun slug uit de wissel.nl-URL |
+| `MIN_DISCOUNT` | `5`                                | korting-drempel (%) als settings.json geen `standaard` heeft |
+| `MIN_VALUE`    | `50`                               | waarde-drempel (€) als settings.json geen `standaard` heeft |
 | `CHECK_INTERVAL` | `120`                            | seconden tussen twee checks          |
 | `SOURCES`      | `wissel,cardswap`                  | welke sites                          |
 | `CARDSWAP_COLLECTIONS` | (leeg)                     | extra cardswap-collecties naast de automatisch gevonden (laatste deel van de URL) |
