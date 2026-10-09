@@ -6,18 +6,22 @@ is een blok als <div id="product-v1-b75-n5000-s4700-exp26-12-31" ...>:
 n = nominale waarde in centen, s = verkoopprijs in centen, exp = vervaldatum.
 
 cardswap.nl: een Shopify-winkel; elke bon is een eigen product ("Apple 50 euro") in de
-collectie /collections/<handle>/products.json.
+collectie /collections/<handle>/products.json. Welke collecties bij de gevolgde merken horen,
+haalt het script zelf uit /collections.json.
 
 Configuratie via omgevingsvariabelen:
   NTFY_TOPIC      ntfy.sh-topic waar meldingen heen gaan (verplicht om te versturen)
   NTFY_SERVER     standaard https://ntfy.sh
-  MIN_DISCOUNT    minimale korting in procent, strikt groter dan (standaard 5)
-  MIN_VALUE       minimale nominale waarde in euro (standaard 50)
-                  Per platform overschreven door settings.json (zie workflow "Monitor instellingen").
+  MIN_DISCOUNT    standaard korting-drempel in procent, strikt groter dan (standaard 5)
+  MIN_VALUE       standaard minimale nominale waarde in euro (standaard 50)
   SETTINGS_REPO   owner/repo om settings.json live van GitHub te lezen (met GH_TOKEN); anders lokaal
-  BRANDS          komma-gescheiden merken of wissel.nl-slugs (standaard coolblue,apple,mediamarkt,bol)
+  BRANDS          merken als settings.json geen "merken" heeft (standaard coolblue,apple,mediamarkt,bol)
+
+settings.json bepaalt per merk de drempels, en welke merken op alle sites gevolgd worden:
+  {"standaard": {"min_value": 50, "min_discount": 5},
+   "merken": {"coolblue": {"naam": "Coolblue", "min_value": 49, "min_discount": 9.9}, ...}}
   SOURCES         welke sites (standaard wissel,cardswap)
-  CARDSWAP_COLLECTIONS  cardswap-collecties (standaard apple,bol-com,bol-com-copy,coolblue)
+  CARDSWAP_COLLECTIONS  extra cardswap-collecties naast de automatisch gevonden (standaard geen)
   STATE_FILE      pad naar het bestand met al geziene listings (standaard state.json)
   RUN_MINUTES     blijf zo lang herhalen (standaard 0: één keer checken)
   CHECK_INTERVAL  seconden tussen checks in herhaalmodus (standaard 120)
@@ -45,13 +49,16 @@ USER_AGENT = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 )
 
-# Merknaam -> (slug op wissel.nl, weergavenaam). Onbekende namen worden als slug gebruikt.
+# Merknaam -> (bekende slug op wissel.nl, weergavenaam). Voor andere merken zoekt het script
+# de slug zelf op in de sitemap van wissel.nl.
 BRAND_SLUGS = {
     "coolblue": ("coolblue", "Coolblue"),
     "apple": ("apple-gift-card-nl", "Apple"),
     "mediamarkt": ("mediamarkt", "MediaMarkt"),
     "bol": ("bol", "Bol.com"),
 }
+DEFAULT_BRANDS = list(BRAND_SLUGS)
+_brand_names: dict[str, str] = {}  # weergavenamen uit settings.json
 
 PRODUCT_RE = re.compile(r'<div\b[^>]*\bid="product-(v\d+-[^"]+)"[^>]*>', re.I)
 SKU_RE = re.compile(r"-n(\d+)-s(\d+)(?:-exp(\d{2}-\d{2}-\d{2}))?")
@@ -110,14 +117,57 @@ def fetch_html(url: str, accept: str = "text/html") -> str:
 
 
 def brand_info(brand: str) -> tuple[str, str]:
-    return BRAND_SLUGS.get(brand, (brand, brand.capitalize()))
+    return BRAND_SLUGS.get(brand, (brand, _brand_names.get(brand, brand.capitalize())))
 
 
-def brand_url(brand: str) -> str:
-    return f"{BASE_URL}/kopen/cadeaubonnen-met-korting/{brand_info(brand)[0]}"
+def brand_url(brand: str, slug: str | None = None) -> str:
+    return f"{BASE_URL}/kopen/cadeaubonnen-met-korting/{slug or brand_info(brand)[0]}"
 
 
-def parse_listings(page: str, brand: str) -> list[Listing]:
+# Herkent een merk in een naam, slug of handle ("Bol.com", "media-markt", "bol-com-copy").
+# Merken zonder eigen patroon worden op hun naam herkend.
+BRAND_MATCH = {
+    "coolblue": r"cool\s*-?\s*blue",
+    "apple": r"\bapple\b",
+    "mediamarkt": r"media\s*-?\s*markt",
+    "bol": r"\bbol\b",
+}
+
+
+def match_brand(text: str, brands: list[str]) -> str | None:
+    for brand in brands:
+        pattern = BRAND_MATCH.get(brand, r"\b" + re.escape(brand))
+        if re.search(pattern, text, re.I):
+            return brand
+    return None
+
+
+WISSEL_DISCOVER_EVERY = 6 * 3600  # seconden
+_wissel_slugs: dict = {"at": None, "slugs": {}}
+
+
+def wissel_slugs(brands: list[str]) -> dict[str, str]:
+    """slug -> merk op wissel.nl. Bekende merken direct, andere via de sitemap (elke 6 uur)."""
+    known = {BRAND_SLUGS[b][0]: b for b in brands if b in BRAND_SLUGS}
+    unknown = [b for b in brands if b not in BRAND_SLUGS]
+    if not unknown:
+        return known
+    now = time.monotonic()
+    if _wissel_slugs["at"] is None or now - _wissel_slugs["at"] >= WISSEL_DISCOVER_EVERY:
+        try:
+            sitemap = fetch_html(f"{BASE_URL}/sitemap.xml", accept="application/xml")
+            found = {}
+            for slug in re.findall(r"/kopen/cadeaubonnen-met-korting/([a-z0-9-]+)<", sitemap):
+                brand = match_brand(slug.replace("-", " "), unknown)
+                if brand and not slug.endswith("-be"):  # Belgische varianten overslaan
+                    found[slug] = brand
+            _wissel_slugs.update(at=now, slugs=found)
+        except FetchError as err:
+            print(f"::warning::sitemap van wissel.nl niet op te halen: {err}")
+    return known | {s: b for s, b in _wissel_slugs["slugs"].items() if b in unknown}
+
+
+def parse_listings(page: str, brand: str, slug: str | None = None) -> list[Listing]:
     """Haalt alle listings uit de HTML van een merkpagina."""
     matches = list(PRODUCT_RE.finditer(page))
     listings: dict[str, Listing] = {}
@@ -144,7 +194,7 @@ def parse_listings(page: str, brand: str) -> list[Listing]:
         listings.setdefault(sku, Listing(
             key=f"{brand}:{sku}",
             brand=brand,
-            url=brand_url(brand),
+            url=brand_url(brand, slug),
             price=price,
             face_value=face,
             expires=sku_m.group(3) if sku_m and sku_m.group(3) else None,
@@ -162,10 +212,10 @@ def log_found(source: str, label: str, found: list[Listing]) -> None:
 def fetch_listings(brands: list[str]) -> list[Listing]:
     """Alle listings van wissel.nl voor de gegeven merken."""
     listings: list[Listing] = []
-    for i, brand in enumerate(brands):
+    for i, (slug, brand) in enumerate(wissel_slugs(brands).items()):
         if i:
             time.sleep(2)
-        found = parse_listings(fetch_html(brand_url(brand)), brand)
+        found = parse_listings(fetch_html(brand_url(brand, slug)), brand, slug)
         log_found("wissel", brand_info(brand)[1], found)
         listings.extend(found)
     if not listings:
@@ -176,7 +226,45 @@ def fetch_listings(brands: list[str]) -> list[Listing]:
 
 def collection_brand(handle: str) -> str:
     """'bol-com-copy' -> 'bol'; onbekende collecties houden hun eigen naam."""
-    return next((b for b in BRAND_SLUGS if b in handle.lower()), handle)
+    return match_brand(handle.replace("-", " "), list(BRAND_MATCH)) or handle
+
+
+# Als het ophalen van de collectielijst niet lukt en er nog niets bekend is.
+CARDSWAP_FALLBACK = {"apple": "apple", "bol-com-copy": "bol", "coolblue": "coolblue"}
+DISCOVER_EVERY = 30 * 60  # seconden; de collectielijst verandert zelden
+_discovered: dict = {"at": None, "collections": {}}
+
+
+def discover_cardswap(brands: list[str]) -> dict[str, str]:
+    """Alle cardswap-collecties (handle -> merk) voor de gevolgde merken.
+
+    Zo komt een nieuwe collectie, bijv. als Cardswap ooit MediaMarkt gaat verkopen, vanzelf
+    mee. De lijst wordt hooguit elk half uur opnieuw opgehaald; lukt dat niet, dan geldt de
+    vorige lijst (of CARDSWAP_FALLBACK).
+    """
+    now = time.monotonic()
+    if _discovered["at"] is not None and now - _discovered["at"] < DISCOVER_EVERY:
+        return _discovered["collections"]
+    found: dict[str, str] = {}
+    try:
+        for page in range(1, 6):
+            url = f"{CARDSWAP_URL}/collections.json?limit=250&page={page}"
+            collections = json.loads(fetch_html(url, accept="application/json")).get("collections", [])
+            for col in collections:
+                brand = match_brand(f"{col.get('handle', '')} {col.get('title', '')}", brands)
+                if brand and col.get("handle"):
+                    found[col["handle"]] = brand
+            if len(collections) < 250:
+                break
+    except (FetchError, json.JSONDecodeError) as err:
+        print(f"::warning::Cardswap-collecties niet op te halen, vorige lijst blijft gelden: {err}")
+        if not _discovered["collections"]:
+            _discovered["collections"] = {h: b for h, b in CARDSWAP_FALLBACK.items() if b in brands}
+        return _discovered["collections"]
+    if found != _discovered["collections"]:
+        print("Cardswap-collecties: " + (", ".join(f"{h} ({b})" for h, b in found.items()) or "geen"))
+    _discovered.update(at=now, collections=found)
+    return found
 
 
 def parse_cardswap(products: list[dict], brand: str) -> list[Listing]:
@@ -212,13 +300,19 @@ def parse_cardswap(products: list[dict], brand: str) -> list[Listing]:
     return listings
 
 
-def fetch_cardswap(collections: list[str]) -> list[Listing]:
-    """Alle listings uit de cardswap.nl-collecties; een lege collectie (uitverkocht) is normaal."""
+def fetch_cardswap(collections: list[str], brands: list[str] | None = None) -> list[Listing]:
+    """Alle listings uit de cardswap.nl-collecties; een lege collectie (uitverkocht) is normaal.
+
+    Met brands erbij worden de collecties voor die merken automatisch gevonden; collections
+    zijn dan extra collecties die altijd meegaan.
+    """
+    handles = dict(discover_cardswap(brands)) if brands else {}
+    for handle in collections:
+        handles.setdefault(handle, collection_brand(handle))
     listings: dict[str, Listing] = {}
-    for i, handle in enumerate(collections):
+    for i, (handle, brand) in enumerate(handles.items()):
         if i:
             time.sleep(2)
-        brand = collection_brand(handle)
         found: list[Listing] = []
         for page in range(1, 6):
             url = f"{CARDSWAP_URL}/collections/{handle}/products.json?limit=250&page={page}"
@@ -239,7 +333,7 @@ def fetch_source(source: str, brands: list[str], collections: list[str]) -> list
     if source == "wissel":
         return fetch_listings(brands)
     if source == "cardswap":
-        return fetch_cardswap(collections)
+        return fetch_cardswap(collections, brands)
     raise ValueError(f"onbekende bron: {source}")
 
 
@@ -250,11 +344,11 @@ _last_settings: dict = {}
 
 
 def read_settings() -> dict:
-    """settings.json: {"wissel": {"min_value": 50, "min_discount": 5}, "cardswap": {...}}.
+    """Leest settings.json (zie de uitleg bovenaan).
 
-    In de doorlopende run komt het bestand live van GitHub, zodat een wijziging via de
-    workflow "Monitor instellingen" binnen één check meetelt. Lukt dat niet, dan geldt de
-    laatst bekende versie, daarna het lokale bestand.
+    In de doorlopende run komt het bestand live van GitHub (master), zodat een wijziging
+    binnen één check meetelt. Lukt dat niet, dan geldt de laatst bekende versie, daarna het
+    lokale bestand.
     """
     global _last_settings
     repo, token = os.environ.get("SETTINGS_REPO"), os.environ.get("GH_TOKEN")
@@ -276,22 +370,37 @@ def read_settings() -> dict:
     return _last_settings
 
 
-def thresholds_for(sources, settings: dict, default_value: float, default_discount: float) -> dict[str, tuple[float, float]]:
-    """Per bron: (minimale waarde in euro, korting moet hoger zijn dan dit percentage)."""
-    result = {}
-    for source in sources:
-        conf = settings.get(source, {}) if isinstance(settings.get(source), dict) else {}
-        try:
-            result[source] = (float(conf.get("min_value", default_value)), float(conf.get("min_discount", default_discount)))
-        except (TypeError, ValueError):
-            result[source] = (default_value, default_discount)
-    return result
+def _pair(conf, default: tuple[float, float]) -> tuple[float, float]:
+    try:
+        return (float(conf.get("min_value", default[0])), float(conf.get("min_discount", default[1])))
+    except (AttributeError, TypeError, ValueError):
+        return default
+
+
+def brand_settings(settings: dict, default_value: float, default_discount: float,
+                   fallback_brands: list[str] | None = None):
+    """(merken, {merk: (min waarde, korting hoger dan)}, standaard) uit settings.json."""
+    standard = _pair(settings.get("standaard", {}), (default_value, default_discount))
+    merken = settings.get("merken")
+    if not isinstance(merken, dict) or not merken:
+        brands = list(fallback_brands or DEFAULT_BRANDS)
+        return brands, {b: standard for b in brands}, standard
+    brands, thresholds = [], {}
+    for key, conf in merken.items():
+        brand = str(key).strip().lower()
+        if not brand:
+            continue
+        brands.append(brand)
+        thresholds[brand] = _pair(conf if isinstance(conf, dict) else {}, standard)
+        if isinstance(conf, dict) and conf.get("naam"):
+            _brand_names[brand] = str(conf["naam"])
+    return brands, thresholds, standard
 
 
 def describe_thresholds(thresholds: dict[str, tuple[float, float]]) -> str:
     return "\n".join(
-        f"{SOURCE_NAMES.get(src, src)}: vanaf {euro(value)}, meer dan {f'{discount:g}'.replace('.', ',')}% korting"
-        for src, (value, discount) in thresholds.items()
+        f"{brand_info(brand)[1]}: vanaf {euro(value)}, meer dan {f'{discount:g}'.replace('.', ',')}% korting"
+        for brand, (value, discount) in thresholds.items()
     )
 
 
@@ -371,7 +480,7 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
         ok_sources.append(source)
 
     def deal(listing: Listing) -> bool:
-        value, discount = thresholds.get(listing.source, (min_value, min_discount))
+        value, discount = thresholds.get(listing.brand, (min_value, min_discount))
         return is_deal(listing, discount, value)
 
     deals = [l for l in listings if deal(l)]
@@ -417,13 +526,13 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
 def main() -> int:
     min_discount = float(os.environ.get("MIN_DISCOUNT", str(DEFAULT_MIN_DISCOUNT)))
     min_value = float(os.environ.get("MIN_VALUE", str(DEFAULT_MIN_VALUE)))
-    brands = [b.strip().lower() for b in os.environ.get("BRANDS", "coolblue,apple,mediamarkt,bol").split(",") if b.strip()]
+    env_brands = [b.strip().lower() for b in os.environ.get("BRANDS", ",".join(DEFAULT_BRANDS)).split(",") if b.strip()]
     state_path = Path(os.environ.get("STATE_FILE", "state.json"))
     run_seconds = float(os.environ.get("RUN_MINUTES", "0")) * 60
     interval = float(os.environ.get("CHECK_INTERVAL", "120"))
     sources = tuple(x.strip() for x in os.environ.get("SOURCES", "wissel,cardswap").split(",") if x.strip())
     collections = tuple(x.strip() for x in os.environ.get(
-        "CARDSWAP_COLLECTIONS", "apple,bol-com,bol-com-copy,coolblue").split(",") if x.strip())
+        "CARDSWAP_COLLECTIONS", "").split(",") if x.strip())
 
     # GitHub start geplande runs vaak uren te laat. Daarom blijft één run een paar uur
     # draaien en checkt hij zelf elke paar minuten.
@@ -432,11 +541,12 @@ def main() -> int:
     while True:
         started = time.monotonic()
         try:
-            thresholds = thresholds_for(sources, read_settings(), min_value, min_discount)
+            brands, thresholds, (std_value, std_discount) = brand_settings(
+                read_settings(), min_value, min_discount, env_brands)
             if thresholds != shown:
-                print("Drempels:\n" + describe_thresholds(thresholds))
+                print("Drempels per merk:\n" + describe_thresholds(thresholds))
                 shown = thresholds
-            check_once(state_path, brands, min_discount, min_value, sources, collections, thresholds)
+            check_once(state_path, brands, std_discount, std_value, sources, collections, thresholds)
         except Exception:
             if not run_seconds:
                 raise

@@ -49,14 +49,14 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           MIN_DISCOUNT: ${{ vars.MIN_DISCOUNT || '5' }}
           MIN_VALUE: ${{ vars.MIN_VALUE || '50' }}
-          BRANDS: ${{ vars.BRANDS || 'coolblue,apple,mediamarkt,bol' }}
           CHECK_INTERVAL: ${{ vars.CHECK_INTERVAL || '120' }}
           SOURCES: ${{ vars.SOURCES || 'wissel,cardswap' }}
-          CARDSWAP_COLLECTIONS: ${{ vars.CARDSWAP_COLLECTIONS || 'apple,bol-com,bol-com-copy,coolblue' }}
+          # Cardswap-collecties voor de merken uit settings.json worden automatisch gevonden; hier alleen extra's.
+          CARDSWAP_COLLECTIONS: ${{ vars.CARDSWAP_COLLECTIONS || '' }}
           RUN_MINUTES: ${{ inputs.dry_run && '0' || '330' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           PYTHONUNBUFFERED: "1"
-          # Drempels per platform live uit settings.json op master (workflow "Monitor instellingen").
+          # Merken en drempels per merk live uit wissel-monitor/settings.json op master.
           SETTINGS_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: python monitor.py

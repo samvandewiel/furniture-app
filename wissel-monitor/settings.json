@@ -1,10 +1,9 @@
 {
- "cardswap": {
-  "min_discount": 9.9,
-  "min_value": 74.95
- },
- "wissel": {
-  "min_discount": 9.9,
-  "min_value": 49
+ "standaard": {"min_value": 50, "min_discount": 5},
+ "merken": {
+  "coolblue": {"naam": "Coolblue", "min_value": 49, "min_discount": 9.9},
+  "apple": {"naam": "Apple", "min_value": 49, "min_discount": 9.9},
+  "mediamarkt": {"naam": "MediaMarkt", "min_value": 49, "min_discount": 9.9},
+  "bol": {"naam": "Bol.com", "min_value": 49, "min_discount": 9.9}
  }
 }
