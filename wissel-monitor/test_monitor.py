@@ -158,7 +158,7 @@ class MainTest(unittest.TestCase):
     COLLECTIONS = ""
     settings: dict = {}
 
-    def run_main(self, pages, state_file, cardswap=None, fetch_error=None, sources="wissel"):
+    def run_main(self, pages, state_file, cardswap=None, fetch_error=None, sources="wissel", woo=()):
         monitor._discovered.update(at=None, collections={})
         sent = []
 
@@ -167,6 +167,8 @@ class MainTest(unittest.TestCase):
                 raise fetch_error
             if "cardswap" in url:
                 return cardswap_fetch(cardswap)(url)
+            if "macvoorminder" in url:
+                return json.dumps(list(woo))
             brand = next(b for b in monitor.BRAND_SLUGS if url.endswith("/" + monitor.brand_info(b)[0]))
             return pages.get(brand, "<main></main>")
 
@@ -188,6 +190,21 @@ class MainTest(unittest.TestCase):
             extra = dict(PAGES, mediamarkt=item("v1-b9-n25000-s22500-exp27-01-01", "250.0", "-10.0"))
             self.assertEqual(self.run_main(extra, state), ["Wissel · MediaMarkt: 10.0% korting"])
             self.assertIn("mediamarkt:v1-b9-n25000-s22500-exp27-01-01", json.loads(state.read_text())["seen"])
+
+    def test_watch_page_notifies_new_products_in_stock(self):
+        product = {"id": 7, "name": "Studio Display", "permalink": "https://x/7", "is_in_stock": True,
+                   "prices": {"price": "129900", "currency_minor_unit": 2}}
+        sold_out = dict(product, id=8, is_in_stock=False)
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "state.json"
+            self.run_main(PAGES, state)
+            self.assertEqual(self.run_main(PAGES, state, woo=[sold_out]), [])
+            self.assertEqual(self.run_main(PAGES, state, woo=[product, sold_out]),
+                             ["Mac voor Minder · Studio Display: 1 nieuw"])
+            self.assertEqual(self.run_main(PAGES, state, woo=[product]), [])
+            saved = json.loads(state.read_text())
+            self.assertEqual(saved["watch"], {"macvoorminder-studio-display": ["7"]})
+            self.assertIn("seen", saved)
 
     def test_empty_result_counts_as_failure(self):
         with tempfile.TemporaryDirectory() as d:

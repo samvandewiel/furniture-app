@@ -518,9 +518,56 @@ def check_once(state_path: Path, brands: list[str], min_discount: float, min_val
     current = {d.key for d in deals}
     seen = {k: v for k, v in seen.items() if k in current or now - v < 30 * 86400}
     new_state = {"seen": seen, "sources": sorted(started)}
+    if "watch" in state:
+        new_state["watch"] = state["watch"]
     if failures:
         new_state["failures"] = failures
     state_path.write_text(json.dumps(new_state, indent=1, sort_keys=True))
+
+
+# Losse WooCommerce-categoriepagina's: melding zodra er een product op voorraad bij komt.
+WATCH_PAGES = {
+    "macvoorminder-studio-display": (
+        "Mac voor Minder · Studio Display",
+        "https://www.macvoorminder.nl/wp-json/wc/store/v1/products?category=1451&per_page=100",
+        "https://www.macvoorminder.nl/mac/studio-display",
+    ),
+}
+
+
+def parse_woo_products(products: list[dict]) -> dict[str, str]:
+    """Product-id -> korte omschrijving, alleen voor wat op voorraad is."""
+    found = {}
+    for p in products:
+        if not p.get("is_in_stock", True):
+            continue
+        prices = p.get("prices") or {}
+        line = html.unescape(p.get("name", "")).strip()
+        try:
+            price = int(prices["price"]) / 10 ** int(prices.get("currency_minor_unit", 2))
+            line += f" · {euro(price)}"
+        except (KeyError, TypeError, ValueError):
+            pass
+        found[str(p["id"])] = line + (f"\n{p['permalink']}" if p.get("permalink") else "")
+    return found
+
+
+def check_watch_pages(state_path: Path) -> None:
+    state = load_state(state_path)
+    watch = state.get("watch", {})
+    for name, (label, api_url, page_url) in WATCH_PAGES.items():
+        try:
+            found = parse_woo_products(json.loads(fetch_html(api_url, accept="application/json")))
+        except (FetchError, ValueError, KeyError) as err:
+            print(f"::warning::{label} niet uit te lezen: {err}")
+            continue
+        print(f"{label}: {len(found)} op voorraad")
+        new = [line for pid, line in found.items() if pid not in watch.get(name, [])]
+        if new:
+            send_ntfy(f"{label}: {len(new)} nieuw", "\n\n".join(new[:10]), click=page_url)
+        watch[name] = sorted(found)
+    state["watch"] = watch
+    state_path.write_text(json.dumps(state, indent=1, sort_keys=True))
 
 
 def main() -> int:
@@ -547,6 +594,7 @@ def main() -> int:
                 print("Drempels per merk:\n" + describe_thresholds(thresholds))
                 shown = thresholds
             check_once(state_path, brands, std_discount, std_value, sources, collections, thresholds)
+            check_watch_pages(state_path)
         except Exception:
             if not run_seconds:
                 raise
